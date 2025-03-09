@@ -35,8 +35,4 @@ dependencies = [
 
 [build-system]
 requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
-
-[tool.uv]
-python = "3.8"
-index-url = "https://download.pytorch.org/whl/cu117" 
+build-backend = "setuptools.build_meta" 
