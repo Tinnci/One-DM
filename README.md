@@ -40,12 +40,33 @@ Overview of the proposed One-DM
 
 
 ## 🔨 Requirements
+
+### 使用uv安装（推荐）
+```bash
+# 安装uv（如果尚未安装）
+pip install uv
+
+# 创建使用Python 3.8的虚拟环境
+uv venv --python=3.8
+
+# 安装项目及其依赖
+uv pip install -e .
+
+# 或者直接从requirements.txt安装
+uv pip install -r requirements.txt
+
+# 安装带CUDA支持的PyTorch（如果上面的安装没有包含CUDA支持）
+uv pip install torch==1.13.1 torchvision==0.14.1 --index-url https://download.pytorch.org/whl/cu117
 ```
+
+### 使用conda安装（可选）
+```bash
 conda create -n One-DM python=3.8 -y
 conda activate One-DM
 # install all dependencies
 conda env create -f environment.yml
 ```
+
 ## ☀️ Datasets
 We provide English datasets in [Google Drive](https://drive.google.com/drive/folders/108TB-z2ytAZSIEzND94dyufybjpqVyn6) | [Baidu Netdisk](https://pan.baidu.com/s/14ESFRk0RaTr98eeLzcr_xw?pwd=4vsv) | [ShiZhi AI](https://wisemodel.cn/models/SCUT-MMPR/One-DM/blob/main/English_data.zip). Please download these datasets, uzip them and move the extracted files to /data.
 ## 🐳 Model Zoo

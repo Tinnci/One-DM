@@ -9,3 +9,4 @@ files/*
 Generated/*
 LICENSE
 *.sh
+/.venv
