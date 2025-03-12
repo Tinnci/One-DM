@@ -35,3 +35,4 @@ htmlcov/
 .idea/
 *.swp
 *.swo
+test_log.txt
