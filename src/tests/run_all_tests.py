@@ -26,7 +26,8 @@ def run_all_tests():
         'tests.test_performance',
         'tests.test_integration',
         'tests.test_model_params',
-        'tests.test_mock_data'
+        'tests.test_mock_data',
+        'tests.test_paragraph_dataset'
     ]
     
     # 跟踪每个测试模块的结果
