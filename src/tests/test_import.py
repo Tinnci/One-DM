@@ -136,19 +136,19 @@ def test_imports():
 
 def run_tests():
     """为所有测试脚本提供统一接口"""
-    # 确保 src 目录在 Python 路径中
-    src_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    if src_path not in sys.path:
-        sys.path.insert(0, src_path)
+    # 确保项目根目录在 Python 路径中
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
     
     # 运行导入测试
     return test_imports()
 
 if __name__ == "__main__":
-    # 确保 src 目录在 Python 路径中
-    src_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    if src_path not in sys.path:
-        sys.path.insert(0, src_path)
+    # 确保项目根目录在 Python 路径中
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
     
     success = test_imports()
     sys.exit(0 if success else 1) 

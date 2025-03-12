@@ -20,9 +20,9 @@ def run_all_tests():
     
     # 导入各个测试模块
     test_modules = [
-        'test_import',
-        'test_components',
-        'test_data_loader'
+        'tests.test_import',
+        'tests.test_components',
+        'tests.test_data_loader'
     ]
     
     # 跟踪每个测试模块的结果
@@ -68,10 +68,10 @@ def run_all_tests():
     return all_passed
 
 if __name__ == "__main__":
-    # 确保 src 目录在 Python 路径中
-    src_path = os.path.abspath(os.path.dirname(__file__))
-    if src_path not in sys.path:
-        sys.path.insert(0, src_path)
+    # 确保项目根目录在 Python 路径中
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
     
     success = run_all_tests()
     sys.exit(0 if success else 1) 

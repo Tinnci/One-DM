@@ -12,10 +12,10 @@ import numpy as np
 from collections import defaultdict
 import torch.nn as nn
 
-# 确保 src 目录在 Python 路径中
-src_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if src_path not in sys.path:
-    sys.path.insert(0, src_path)
+# 确保项目根目录在 Python 路径中
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 # 导入所需模块
 from one_dm.models.diffusion import Diffusion, EMA
@@ -337,34 +337,27 @@ class TestConfig(unittest.TestCase):
             self.skipTest("配置对象的属性访问方式与预期不同")
 
 def run_tests():
-    """运行所有测试"""
-    print("开始测试 one_dm 主要功能组件...\n")
+    """为所有测试脚本提供统一接口"""
+    # 确保项目根目录在 Python 路径中
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
     
-    # 创建测试套件
-    test_suite = unittest.TestSuite()
-    
-    # 添加测试用例
-    test_loader = unittest.TestLoader()
-    
-    test_suite.addTest(test_loader.loadTestsFromTestCase(TestDiffusion))
-    test_suite.addTest(test_loader.loadTestsFromTestCase(TestEMA))
-    test_suite.addTest(test_loader.loadTestsFromTestCase(TestConfig))
-    
-    # 如果有CUDA设备，才添加模型测试
-    if torch.cuda.is_available():
-        print("检测到CUDA设备，添加模型前向传播测试...")
-        test_suite.addTest(test_loader.loadTestsFromTestCase(TestUNetModel))
-        test_suite.addTest(test_loader.loadTestsFromTestCase(TestTransformer))
-    else:
-        print("未检测到CUDA设备，跳过模型前向传播测试...")
+    # 创建测试加载器
+    loader = unittest.TestLoader()
+    suite = loader.loadTestsFromModule(sys.modules[__name__])
     
     # 运行测试
-    test_runner = unittest.TextTestRunner(verbosity=2)
-    test_result = test_runner.run(test_suite)
+    runner = unittest.TextTestRunner(verbosity=2)
+    result = runner.run(suite)
     
-    # 返回测试结果
-    return test_result.wasSuccessful()
+    return result.wasSuccessful()
 
 if __name__ == "__main__":
+    # 确保项目根目录在 Python 路径中
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    
     success = run_tests()
     sys.exit(0 if success else 1)
