@@ -148,6 +148,28 @@ class TestUNetParameters(unittest.TestCase):
             output = model(test_input, time_step)
             self.assertEqual(output.shape, (batch_size, 3, 32, 32))
             
+            # 检查模型结构 - 更健壮的方式
+            # 首先检查模型是否有相关属性
+            if hasattr(model, 'input_blocks'):
+                # 如果有input_blocks属性，检查它是否可迭代
+                try:
+                    num_input_blocks = len(model.input_blocks)
+                    print(f"UNet模型有 {num_input_blocks} 个输入块")
+                except (TypeError, AttributeError):
+                    print("模型的input_blocks属性不可迭代")
+            else:
+                print("模型不具备input_blocks属性")
+            
+            # 检查中间块和输出块
+            if hasattr(model, 'middle_block'):
+                print("模型具备middle_block属性")
+            if hasattr(model, 'output_blocks'):
+                try:
+                    num_output_blocks = len(model.output_blocks)
+                    print(f"UNet模型有 {num_output_blocks} 个输出块")
+                except (TypeError, AttributeError):
+                    print("模型的output_blocks属性不可迭代")
+            
             # 检查参数量是否合理
             param_count = sum(p.numel() for p in model.parameters())
             print(f"UNet模型参数数量: {param_count}")
@@ -164,24 +186,32 @@ class TestTransformerParameters(unittest.TestCase):
     def test_encoder_parameters(self):
         """测试TransformerEncoder的参数配置"""
         try:
-            # 初始化TransformerEncoder
+            # 首先创建一个TransformerEncoderLayer
+            encoder_layer = torch.nn.TransformerEncoderLayer(
+                d_model=64,
+                nhead=4,
+                dim_feedforward=256,
+                dropout=0.1
+            )
+            
+            # 然后使用层和层数来初始化TransformerEncoder
             encoder = TransformerEncoder(
-                dim=64,  # 假设参数名为dim
-                depth=3,
-                heads=4
+                encoder_layer=encoder_layer,
+                num_layers=3,
+                norm=None
             ).to(self.device)
             
-            # 检查基本属性
-            if hasattr(encoder, 'dim'):
-                self.assertEqual(encoder.dim, 64)
-            if hasattr(encoder, 'depth'):
-                self.assertEqual(encoder.depth, 3)
-            if hasattr(encoder, 'heads'):
-                self.assertEqual(encoder.heads, 4)
+            # 检查层数
+            self.assertEqual(encoder.num_layers, 3)
+            self.assertEqual(len(encoder.layers), 3)
             
-            # 检查层结构
-            if hasattr(encoder, 'layers'):
-                self.assertEqual(len(encoder.layers), 3)
+            # 测试前向传播
+            batch_size = 2
+            seq_len = 10
+            d_model = 64
+            src = torch.randn(seq_len, batch_size, d_model).to(self.device)
+            output = encoder(src)
+            self.assertEqual(output.shape, (seq_len, batch_size, d_model))
             
             print("TransformerEncoder参数测试通过")
         except Exception as e:
@@ -190,24 +220,36 @@ class TestTransformerParameters(unittest.TestCase):
     def test_decoder_parameters(self):
         """测试TransformerDecoder的参数配置"""
         try:
-            # 初始化TransformerDecoder
+            # 首先创建一个TransformerDecoderLayer
+            decoder_layer = torch.nn.TransformerDecoderLayer(
+                d_model=64,
+                nhead=4,
+                dim_feedforward=256,
+                dropout=0.1
+            )
+            
+            # 然后使用层和层数来初始化TransformerDecoder
             decoder = TransformerDecoder(
-                dim=64,
-                depth=3,
-                heads=4
+                decoder_layer=decoder_layer,
+                num_layers=3,
+                norm=None,
+                return_intermediate=False
             ).to(self.device)
             
-            # 检查基本属性
-            if hasattr(decoder, 'dim'):
-                self.assertEqual(decoder.dim, 64)
-            if hasattr(decoder, 'depth'):
-                self.assertEqual(decoder.depth, 3)
-            if hasattr(decoder, 'heads'):
-                self.assertEqual(decoder.heads, 4)
+            # 检查层数
+            self.assertEqual(decoder.num_layers, 3)
+            self.assertEqual(len(decoder.layers), 3)
             
-            # 检查层结构
-            if hasattr(decoder, 'layers'):
-                self.assertEqual(len(decoder.layers), 3)
+            # 测试前向传播
+            batch_size = 2
+            seq_len = 10
+            d_model = 64
+            tgt = torch.randn(seq_len, batch_size, d_model).to(self.device)
+            memory = torch.randn(seq_len, batch_size, d_model).to(self.device)
+            output = decoder(tgt, memory)
+            
+            # 如果return_intermediate=False，输出形状应该与输入相同
+            self.assertEqual(output.shape, (seq_len, batch_size, d_model))
             
             print("TransformerDecoder参数测试通过")
         except Exception as e:

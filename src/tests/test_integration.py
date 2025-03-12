@@ -48,6 +48,30 @@ except ImportError as e:
 # 设置随机种子保证结果可重现
 fix_random_seed(42)
 
+def ensure_tensor_on_device(data, device):
+    """
+    确保数据是张量并且在正确的设备上
+    
+    Args:
+        data: 输入数据，可以是张量、列表、字典、字符串等
+        device: 目标设备
+    
+    Returns:
+        处理后的数据
+    """
+    if isinstance(data, torch.Tensor):
+        return data.to(device)
+    elif isinstance(data, list):
+        return [ensure_tensor_on_device(item, device) for item in data]
+    elif isinstance(data, dict):
+        return {k: ensure_tensor_on_device(v, device) for k, v in data.items()}
+    elif isinstance(data, str):
+        # 对于字符串，返回原始值
+        return data
+    else:
+        # 对于其他类型，直接返回
+        return data
+
 class TestIntegration(unittest.TestCase):
     """端到端集成测试"""
     
@@ -501,13 +525,13 @@ class TestIntegration(unittest.TestCase):
                     test_img = test_batch['img'].to(self.device)
                     test_style = test_batch.get('style', None)
                     if test_style is not None:
-                        test_style = test_style.to(self.device)
+                        test_style = ensure_tensor_on_device(test_style, self.device)
                     test_laplace = test_batch.get('laplace', None)
                     if test_laplace is not None:
-                        test_laplace = test_laplace.to(self.device)
+                        test_laplace = ensure_tensor_on_device(test_laplace, self.device)
                     test_content = test_batch.get('content', None)
                     if test_content is not None:
-                        test_content = test_content.to(self.device)
+                        test_content = ensure_tensor_on_device(test_content, self.device)
                     
                     # 创建随机噪声作为起点
                     batch_size = 2
@@ -614,11 +638,11 @@ class TestIntegration(unittest.TestCase):
                     batch['wid'] = torch.zeros(batch['img'].shape[0], dtype=torch.long).to(self.device)
                 
                 # 确保所有张量都在正确的设备上
+                processed_batch = {}
                 for key in batch:
-                    if isinstance(batch[key], torch.Tensor):
-                        batch[key] = batch[key].to(self.device)
+                    processed_batch[key] = ensure_tensor_on_device(batch[key], self.device)
                 
-                trainer._train_iter(batch, step=0, pbar=None)
+                trainer._train_iter(processed_batch, step=0, pbar=None)
                 print("Trainer训练方法测试通过")
             except Exception as e:
                 print(f"Trainer方法测试异常: {str(e)}")
@@ -755,13 +779,13 @@ class TestIntegration(unittest.TestCase):
                     test_img = test_batch['img'].to(self.device)
                     test_style = test_batch.get('style', None)
                     if test_style is not None:
-                        test_style = test_style.to(self.device)
+                        test_style = ensure_tensor_on_device(test_style, self.device)
                     test_laplace = test_batch.get('laplace', None)
                     if test_laplace is not None:
-                        test_laplace = test_laplace.to(self.device)
+                        test_laplace = ensure_tensor_on_device(test_laplace, self.device)
                     test_content = test_batch.get('content', None)
                     if test_content is not None:
-                        test_content = test_content.to(self.device)
+                        test_content = ensure_tensor_on_device(test_content, self.device)
                     
                     # 创建随机噪声作为起点
                     batch_size = 2
@@ -795,11 +819,18 @@ class TestIntegration(unittest.TestCase):
                     
                     # 尝试条件生成
                     if style is not None and content is not None:
+                        # 修改为使用正确的参数格式调用sample方法
+                        cond_x = torch.randn((2, model.channels, model.image_size, model.image_size)).to(self.device)
+                        cond_styles = ensure_tensor_on_device(style[:1], self.device)  # 只使用第一个样本的风格
+                        cond_content = ensure_tensor_on_device(content[:1], self.device)  # 只使用第一个样本的内容
+                        
                         cond_samples = model.sample(
-                            batch_size=2,
-                            steps=2,
-                            style=style[:1],  # 只使用第一个样本的风格
-                            content=content[:1]  # 只使用第一个样本的内容
+                            model=model,
+                            x=cond_x,
+                            styles=cond_styles,
+                            laplace=None,
+                            content=cond_content,
+                            sampling_timesteps=2
                         )
                         self.assertIsNotNone(cond_samples)
                         
