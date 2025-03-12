@@ -6,10 +6,10 @@ from PIL import Image
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models.paragraph_unet import ParagraphUNetModel
+from src.one_dm.models.paragraph_unet import ParagraphUNetModel
 from diffusers import AutoencoderKL
-from models.paragraph_diffusion import ParagraphDiffusion
-from models.paragraph_generator import ParagraphGenerator
+from src.one_dm.models.paragraph_diffusion import ParagraphDiffusion
+from src.one_dm.models.paragraph_generator import ParagraphGenerator
 
 def main():
     # 设置参数

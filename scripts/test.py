@@ -1,15 +1,15 @@
 import argparse
 import os
-from parse_config import cfg, cfg_from_file, assert_and_infer_cfg
+from src.one_dm.utils.parse_config import cfg, cfg_from_file, assert_and_infer_cfg
 import torch
-from data_loader.loader import Random_StyleIAMDataset, ContentData, generate_type
-from models.unet import UNetModel
+from src.one_dm.data.loader import Random_StyleIAMDataset, ContentData, generate_type
+from src.one_dm.models.unet import UNetModel
 from tqdm import tqdm
 from diffusers import AutoencoderKL
-from models.diffusion import Diffusion
+from src.one_dm.models.diffusion import Diffusion
 import torchvision
 import torch.distributed as dist
-from utils.util import fix_seed
+from src.one_dm.utils.util import fix_seed
 
 def main(opt):
     """ load config file into cfg"""
