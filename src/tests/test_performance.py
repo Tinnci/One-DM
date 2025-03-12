@@ -38,7 +38,7 @@ try:
     from one_dm.models.paragraph_diffusion import ParagraphDiffusion
     from one_dm.models.unet import UNetModel
     from one_dm.models.transformer import TransformerEncoder, TransformerDecoder
-    from one_dm.models.diffusion import GaussianDiffusion
+    from one_dm.models.diffusion import Diffusion
     from one_dm.data.loader import IAMDataset, ContentData
     from one_dm.utils.util import fix_random_seed
 except ImportError as e:
@@ -71,7 +71,7 @@ def count_parameters(model):
     """统计模型参数量"""
     return sum(p.numel() for p in model.parameters())
 
-def profile_forward_pass(model, input_tensor, num_runs=10):
+def profile_forward_pass(model, input_data, num_runs=10):
     """测量前向传播的性能"""
     times = []
     memory_usage = []
@@ -79,7 +79,7 @@ def profile_forward_pass(model, input_tensor, num_runs=10):
     # 预热
     for _ in range(3):
         with torch.no_grad():
-            _ = model(input_tensor)
+            _ = model(input_data)
     
     # 正式测量
     for _ in range(num_runs):
@@ -87,7 +87,7 @@ def profile_forward_pass(model, input_tensor, num_runs=10):
         start_time = time.time()
         
         with torch.no_grad():
-            _ = model(input_tensor)
+            _ = model(input_data)
         
         end_time = time.time()
         end_mem = get_gpu_memory_usage() if torch.cuda.is_available() else get_cpu_memory_usage()
@@ -129,7 +129,11 @@ class TestPerformance(unittest.TestCase):
                     'dropout': 0.0,
                     'channel_mult': [1, 2],
                     'dims': 2,
-                    'use_checkpoint': False
+                    'use_checkpoint': False,
+                    'num_heads': 4,
+                    'use_spatial_transformer': True,
+                    'transformer_depth': 1,
+                    'context_dim': 32
                 },
                 'transformer': {
                     'dim': 32,
@@ -140,7 +144,10 @@ class TestPerformance(unittest.TestCase):
                 'diffusion': {
                     'timesteps': 10,
                     'sampling_timesteps': 5,
-                    'loss_type': 'l1'
+                    'loss_type': 'l1',
+                    'noise_offset': 0,
+                    'beta_start': 1e-4,
+                    'beta_end': 0.02
                 }
             }
         }
@@ -148,8 +155,21 @@ class TestPerformance(unittest.TestCase):
     def test_1_model_size(self):
         """测试模型大小和参数量"""
         try:
+            # 从配置中提取diffusion参数
+            diffusion_config = self.config['model']['diffusion']
+            noise_steps = diffusion_config.get('timesteps', 1000)
+            noise_offset = diffusion_config.get('noise_offset', 0)
+            beta_start = diffusion_config.get('beta_start', 1e-4)
+            beta_end = diffusion_config.get('beta_end', 0.02)
+            
             # 创建模型
-            model = ParagraphDiffusion(self.config).to(self.device)
+            model = ParagraphDiffusion(
+                noise_steps=noise_steps,
+                noise_offset=noise_offset,
+                beta_start=beta_start,
+                beta_end=beta_end,
+                device=self.device
+            ).to(self.device)
             
             # 统计总参数量
             total_params = count_parameters(model)
@@ -182,8 +202,21 @@ class TestPerformance(unittest.TestCase):
     def test_2_inference_speed(self):
         """测试推理速度"""
         try:
+            # 从配置中提取diffusion参数
+            diffusion_config = self.config['model']['diffusion']
+            noise_steps = diffusion_config.get('timesteps', 1000)
+            noise_offset = diffusion_config.get('noise_offset', 0)
+            beta_start = diffusion_config.get('beta_start', 1e-4)
+            beta_end = diffusion_config.get('beta_end', 0.02)
+            
             # 创建模型
-            model = ParagraphDiffusion(self.config).to(self.device)
+            model = ParagraphDiffusion(
+                noise_steps=noise_steps,
+                noise_offset=noise_offset,
+                beta_start=beta_start,
+                beta_end=beta_end,
+                device=self.device
+            ).to(self.device)
             model.eval()
             
             # 准备不同大小的输入批次
@@ -195,10 +228,13 @@ class TestPerformance(unittest.TestCase):
                 
                 # 创建输入数据
                 dummy_input = torch.randn(batch_size, 3, 64, 64).to(self.device)
+                style = torch.randn(batch_size, 1, 64, 64).to(self.device)  # 添加style参数
+                laplace = torch.randn(batch_size, 1, 64, 64).to(self.device)  # 添加laplace参数
+                content = torch.randn(batch_size, 1, 64, 64).to(self.device)  # 添加content参数，注意这里的1是时间步
                 
                 # 测量前向传播性能
                 with timer(f"批次大小 {batch_size} 的推理"):
-                    perf_metrics = profile_forward_pass(model, dummy_input)
+                    perf_metrics = profile_forward_pass(model, (dummy_input, style, laplace, content))
                 
                 results[batch_size] = perf_metrics
                 print(f"平均推理时间: {perf_metrics['avg_time']*1000:.2f} ms")
@@ -234,9 +270,22 @@ class TestPerformance(unittest.TestCase):
             if torch.cuda.is_available():
                 print(f"初始GPU内存使用: {initial_gpu_memory:.2f} MB")
             
-            # 创建模型并测量内存增长
+            # 从配置中提取diffusion参数
+            diffusion_config = self.config['model']['diffusion']
+            noise_steps = diffusion_config.get('timesteps', 1000)
+            noise_offset = diffusion_config.get('noise_offset', 0)
+            beta_start = diffusion_config.get('beta_start', 1e-4)
+            beta_end = diffusion_config.get('beta_end', 0.02)
+            
+            # 创建模型
             with timer("模型创建"):
-                model = ParagraphDiffusion(self.config).to(self.device)
+                model = ParagraphDiffusion(
+                    noise_steps=noise_steps,
+                    noise_offset=noise_offset,
+                    beta_start=beta_start,
+                    beta_end=beta_end,
+                    device=self.device
+                ).to(self.device)
             
             post_model_memory = get_cpu_memory_usage()
             post_model_gpu_memory = get_gpu_memory_usage() if torch.cuda.is_available() else 0
@@ -255,20 +304,12 @@ class TestPerformance(unittest.TestCase):
                 
                 # 创建输入数据
                 dummy_input = torch.randn(batch_size, 3, 64, 64).to(self.device)
+                style = torch.randn(batch_size, 1, 64, 64).to(self.device)  # 添加style参数
+                laplace = torch.randn(batch_size, 1, 64, 64).to(self.device)  # 添加laplace参数
+                content = torch.randn(batch_size, 1, 64, 64).to(self.device)  # 添加content参数，注意这里的1是时间步
                 
-                # 记录前向传播的内存使用
-                pre_forward_memory = get_cpu_memory_usage()
-                pre_forward_gpu_memory = get_gpu_memory_usage() if torch.cuda.is_available() else 0
-                
-                with torch.no_grad():
-                    _ = model(dummy_input)
-                
-                post_forward_memory = get_cpu_memory_usage()
-                post_forward_gpu_memory = get_gpu_memory_usage() if torch.cuda.is_available() else 0
-                
-                print(f"前向传播CPU内存增长: {post_forward_memory - pre_forward_memory:.2f} MB")
-                if torch.cuda.is_available():
-                    print(f"前向传播GPU内存增长: {post_forward_gpu_memory - pre_forward_gpu_memory:.2f} MB")
+                # 测量内存使用
+                _ = model((dummy_input, style, laplace, content))
             
             # 测试内存释放
             del model
@@ -289,8 +330,21 @@ class TestPerformance(unittest.TestCase):
         try:
             print("\n开始训练性能测试...")
             
-            # 创建模型和优化器
-            model = ParagraphDiffusion(self.config).to(self.device)
+            # 从配置中提取diffusion参数
+            diffusion_config = self.config['model']['diffusion']
+            noise_steps = diffusion_config.get('timesteps', 1000)
+            noise_offset = diffusion_config.get('noise_offset', 0)
+            beta_start = diffusion_config.get('beta_start', 1e-4)
+            beta_end = diffusion_config.get('beta_end', 0.02)
+            
+            # 创建模型
+            model = ParagraphDiffusion(
+                noise_steps=noise_steps,
+                noise_offset=noise_offset,
+                beta_start=beta_start,
+                beta_end=beta_end,
+                device=self.device
+            ).to(self.device)
             optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
             
             # 准备模拟数据
@@ -305,8 +359,13 @@ class TestPerformance(unittest.TestCase):
                 memory_usage = []
                 
                 for step in range(training_steps):
-                    # 创建随机训练数据
-                    train_data = torch.randn(batch_size, 3, 64, 64).to(self.device)
+                    # 创建训练数据
+                    train_data = (
+                        torch.randn(batch_size, 3, 64, 64).to(self.device),  # dummy_input
+                        torch.randn(batch_size, 1, 64, 64).to(self.device),  # style
+                        torch.randn(batch_size, 1, 64, 64).to(self.device),  # laplace
+                        torch.randn(batch_size, 1, 64, 64).to(self.device)   # content，注意这里的1是时间步
+                    )
                     
                     # 记录开始时间和内存
                     start_time = time.time()
@@ -315,7 +374,12 @@ class TestPerformance(unittest.TestCase):
                     # 训练步骤
                     optimizer.zero_grad()
                     loss = model(train_data)
-                    loss.backward()
+                    # 确保损失是标量值
+                    if isinstance(loss, tuple):
+                        loss = sum(l.mean() if isinstance(l, torch.Tensor) else l for l in loss)
+                    else:
+                        loss = loss.mean()
+                    loss.backward()  # 使用普通的backward()
                     optimizer.step()
                     
                     # 记录结束时间和内存
@@ -352,8 +416,21 @@ class TestPerformance(unittest.TestCase):
         try:
             print("\n开始模型复杂度分析...")
             
+            # 从配置中提取diffusion参数
+            diffusion_config = self.config['model']['diffusion']
+            noise_steps = diffusion_config.get('timesteps', 1000)
+            noise_offset = diffusion_config.get('noise_offset', 0)
+            beta_start = diffusion_config.get('beta_start', 1e-4)
+            beta_end = diffusion_config.get('beta_end', 0.02)
+            
             # 创建模型
-            model = ParagraphDiffusion(self.config).to(self.device)
+            model = ParagraphDiffusion(
+                noise_steps=noise_steps,
+                noise_offset=noise_offset,
+                beta_start=beta_start,
+                beta_end=beta_end,
+                device=self.device
+            ).to(self.device)
             
             # 分析模型结构
             print("\n模型结构分析:")

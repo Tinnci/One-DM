@@ -1,4 +1,6 @@
 import torch
+import torch.nn as nn
+import numpy as np
 from tqdm import tqdm
 
 class EMA:
@@ -33,8 +35,9 @@ class EMA:
     def reset_parameters(self, ema_model, model):
         ema_model.load_state_dict(model.state_dict())
 
-class Diffusion:
+class Diffusion(nn.Module):
     def __init__(self, noise_steps=1000, noise_offset=0, beta_start=1e-4, beta_end=0.02, device=None):
+        super().__init__()
         self.noise_steps = noise_steps
         self.beta_start = beta_start
         self.beta_end = beta_end

@@ -36,28 +36,31 @@ class TestContentData(unittest.TestCase):
         """设置测试环境"""
         self.batch_size = 2
         try:
-            # 不要传入max_len参数
             self.content_data = ContentData()
         except Exception as e:
             self.skipTest(f"无法初始化ContentData: {str(e)}")
     
-    def test_get_random_content(self):
-        """测试随机内容生成功能"""
+    def test_get_content(self):
+        """测试内容生成功能"""
         try:
-            content = self.content_data.get_random_content(self.batch_size)
+            # 使用一个简单的测试文本
+            test_text = "Hello"
+            content = self.content_data.get_content(test_text)
             
             # 检查输出
             self.assertIsNotNone(content)
+            self.assertIsInstance(content, torch.Tensor)
             
-            # 检查批次大小
-            if isinstance(content, torch.Tensor):
-                self.assertEqual(content.shape[0], self.batch_size)
-            elif isinstance(content, list):
-                self.assertEqual(len(content), self.batch_size)
+            # 检查输出维度（应该是 [1, len(text), 32, 32]）
+            self.assertEqual(len(content.shape), 4)
+            self.assertEqual(content.shape[0], 1)  # batch size
+            self.assertEqual(content.shape[1], len(test_text))  # sequence length
+            self.assertEqual(content.shape[2], 32)  # height
+            self.assertEqual(content.shape[3], 32)  # width
             
-            print("ContentData.get_random_content测试通过")
+            print("ContentData.get_content测试通过")
         except Exception as e:
-            self.fail(f"ContentData.get_random_content失败，错误信息: {str(e)}")
+            self.fail(f"ContentData.get_content失败，错误信息: {str(e)}")
 
 class TestParagraphDataset(unittest.TestCase):
     """测试ParagraphDataset的基本功能"""

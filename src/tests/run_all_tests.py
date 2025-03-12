@@ -22,7 +22,11 @@ def run_all_tests():
     test_modules = [
         'tests.test_import',
         'tests.test_components',
-        'tests.test_data_loader'
+        'tests.test_data_loader',
+        'tests.test_performance',
+        'tests.test_integration',
+        'tests.test_model_params',
+        'tests.test_mock_data'
     ]
     
     # 跟踪每个测试模块的结果

@@ -3,13 +3,163 @@ import torch.nn as nn
 import numpy as np
 from tqdm import tqdm
 from src.one_dm.models.diffusion import Diffusion
+from src.one_dm.models.unet import UNetModel
+from src.one_dm.models.transformer import TransformerEncoder, TransformerDecoder, TransformerEncoderLayer, TransformerDecoderLayer
 
 class ParagraphDiffusion(Diffusion):
     """
     扩展Diffusion类以支持段落级特征的生成
     """
-    def __init__(self, noise_steps=1000, noise_offset=0, beta_start=1e-4, beta_end=0.02, device=None):
+    def __init__(self, config=None, noise_steps=1000, noise_offset=0, beta_start=1e-4, beta_end=0.02, device=None):
         super().__init__(noise_steps, noise_offset, beta_start, beta_end, device)
+        
+        # 从配置中获取参数
+        if config is None:
+            config = {
+                'data': {
+                    'image_size': 64,
+                    'channels': 3,
+                    'batch_size': 2
+                },
+                'model': {
+                    'content_emb_size': 32,
+                    'unet': {
+                        'in_channels': 3,
+                        'model_channels': 32,
+                        'out_channels': 3,
+                        'num_res_blocks': 1,
+                        'attention_resolutions': [1],
+                        'dropout': 0.0,
+                        'channel_mult': [1, 2],
+                        'dims': 2,
+                        'use_checkpoint': False
+                    },
+                    'transformer': {
+                        'dim': 32,
+                        'depth': 2,
+                        'heads': 4,
+                        'dim_head': 8
+                    }
+                }
+            }
+        
+        # 创建模型组件
+        unet_config = config['model']['unet']
+        self.unet = UNetModel(
+            in_channels=unet_config['in_channels'],
+            model_channels=unet_config['model_channels'],
+            out_channels=unet_config['out_channels'],
+            num_res_blocks=unet_config['num_res_blocks'],
+            attention_resolutions=unet_config['attention_resolutions'],
+            dropout=unet_config['dropout'],
+            channel_mult=unet_config['channel_mult'],
+            dims=unet_config['dims'],
+            use_checkpoint=unet_config['use_checkpoint'],
+            num_heads=unet_config.get('num_heads', 4),
+            use_spatial_transformer=unet_config.get('use_spatial_transformer', True),
+            transformer_depth=unet_config.get('transformer_depth', 1),
+            context_dim=unet_config.get('context_dim', 32),
+            num_head_channels=unet_config.get('num_head_channels', -1)
+        )
+        
+        transformer_config = config['model']['transformer']
+        d_model = transformer_config['dim']
+        nhead = transformer_config['heads']
+        dim_feedforward = d_model * 4  # 常见的设置
+        dropout = 0.1
+        
+        # 创建encoder
+        encoder_layer = TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout
+        )
+        encoder_norm = nn.LayerNorm(d_model)
+        self.encoder = TransformerEncoder(
+            encoder_layer=encoder_layer,
+            num_layers=transformer_config['depth'],
+            norm=encoder_norm
+        )
+        
+        # 创建decoder
+        decoder_layer = TransformerDecoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout
+        )
+        decoder_norm = nn.LayerNorm(d_model)
+        self.decoder = TransformerDecoder(
+            decoder_layer=decoder_layer,
+            num_layers=transformer_config['depth'],
+            norm=decoder_norm
+        )
+        
+        # 其他参数
+        self.content_emb_size = config['model']['content_emb_size']
+        self.image_size = config['data']['image_size']
+        self.channels = config['data']['channels']
+    
+    def forward(self, x, t=None, styles=None, laplace=None, content=None, 
+                paragraph_features=None, position_info=None, tag=None):
+        """
+        模型的前向传播
+        Args:
+            x: 输入图像或噪声，或者是包含(x, styles, laplace, content)的元组
+            t: 时间步
+            styles: 风格参考
+            laplace: 拉普拉斯特征
+            content: 内容参考
+            paragraph_features: 段落特征
+            position_info: 位置信息
+            tag: 标记（用于训练或推理）
+        """
+        # 处理元组输入
+        if isinstance(x, tuple):
+            x, styles, laplace, content = x
+            tag = 'test'  # 默认为测试模式
+        
+        # 如果没有提供时间步，使用随机时间步
+        if t is None:
+            batch_size = x.shape[0]
+            t = self.sample_timesteps(batch_size).to(x.device)
+        
+        # 使用UNet进行特征提取
+        if tag == 'train':
+            features, high_nce_emb, low_nce_emb = self.unet(x, timesteps=t, style=styles, laplace=laplace, content=content, tag=tag)
+            # 计算MSE损失
+            mse_loss = ((features - x) ** 2).mean()
+            # 计算NCE损失
+            high_nce_loss = (high_nce_emb[:, 0] * high_nce_emb[:, 1]).mean()
+            low_nce_loss = (low_nce_emb[:, 0] * low_nce_emb[:, 1]).mean()
+            nce_loss = high_nce_loss + low_nce_loss
+            # 总损失
+            total_loss = mse_loss + 0.1 * nce_loss
+            # 确保返回标量
+            return total_loss.squeeze()  # 使用squeeze确保返回标量
+        else:
+            # 优化批处理
+            batch_size = x.shape[0]
+            if batch_size > 1:
+                # 并行处理多个样本
+                features = []
+                for i in range(0, batch_size, 2):
+                    # 每次处理2个样本
+                    end_idx = min(i + 2, batch_size)
+                    batch_features = self.unet(
+                        x[i:end_idx],
+                        timesteps=t[i:end_idx] if t is not None else None,
+                        style=styles[i:end_idx] if styles is not None else None,
+                        laplace=laplace[i:end_idx] if laplace is not None else None,
+                        content=content[i:end_idx] if content is not None else None,
+                        tag=tag
+                    )
+                    features.append(batch_features)
+                features = torch.cat(features, dim=0)
+            else:
+                features = self.unet(x, timesteps=t, style=styles, laplace=laplace, content=content, tag=tag)
+            return features
     
     @torch.no_grad()
     def sample(self, model, x, styles, laplace, content, paragraph_features=None, position_info=None, 

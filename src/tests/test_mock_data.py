@@ -35,13 +35,13 @@ fix_random_seed(42)
 class MockDataGenerator:
     """生成模拟数据用于测试"""
     
-    def __init__(self, base_dir=None):
+    def __init__(self, save_dir=None):
         """初始化模拟数据生成器"""
-        if base_dir is None:
+        if save_dir is None:
             self.base_dir = tempfile.mkdtemp()
             self.should_cleanup = True
         else:
-            self.base_dir = base_dir
+            self.base_dir = save_dir
             self.should_cleanup = False
         
         # 创建必要的子目录结构
@@ -78,7 +78,9 @@ class MockDataGenerator:
             font = ImageFont.load_default()
         
         # 计算文本位置以使其居中
-        text_width, text_height = draw.textsize(text, font=font)
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
         position = ((size[0] - text_width) // 2, (size[1] - text_height) // 2)
         
         # 绘制文本
@@ -115,26 +117,45 @@ class MockDataGenerator:
         text_file_path = os.path.join(self.data_dir, f"IAM64_{split}.txt")
         with open(text_file_path, 'w') as f:
             for i in range(num_samples):
-                sample_id = f"{split}_sample_{i}"
+                writer_id = f"{i:03d}"
+                sample_id = f"sample_{i:03d}"
                 text = self.generate_random_text(random.randint(3, 10))
-                f.write(f"{sample_id} {text}\n")
+                f.write(f"{writer_id},{sample_id} {text}\n")
                 indices.append(sample_id)
                 text_mapping[sample_id] = text
                 
+                # 创建作者目录
+                writer_img_dir = os.path.join(self.image_dir, split, writer_id)
+                writer_style_dir = os.path.join(self.style_dir, split, writer_id)
+                writer_laplace_dir = os.path.join(self.laplace_dir, split, writer_id)
+                os.makedirs(writer_img_dir, exist_ok=True)
+                os.makedirs(writer_style_dir, exist_ok=True)
+                os.makedirs(writer_laplace_dir, exist_ok=True)
+                
                 # 生成图像
                 img = self.generate_text_image(text)
-                img_path = os.path.join(self.image_dir, split, f"{sample_id}.png")
+                img_path = os.path.join(writer_img_dir, f"{sample_id}.png")
                 img.save(img_path)
                 
                 # 生成风格参考图像
                 style_img = self.generate_text_image(text, bg_color=(240, 240, 240))
-                style_path = os.path.join(self.style_dir, split, f"{sample_id}.png")
+                style_path = os.path.join(writer_style_dir, f"{sample_id}.png")
                 style_img.save(style_path)
                 
                 # 生成拉普拉斯图像
                 laplace_img = self.generate_laplace_image(img)
-                laplace_path = os.path.join(self.laplace_dir, split, f"{sample_id}.png")
+                laplace_path = os.path.join(writer_laplace_dir, f"{sample_id}.png")
                 laplace_img.save(laplace_path)
+                
+                # 生成额外的风格参考图像
+                extra_text = self.generate_random_text(random.randint(3, 10))
+                extra_style_img = self.generate_text_image(extra_text, bg_color=(240, 240, 240))
+                extra_style_path = os.path.join(writer_style_dir, f"extra_{sample_id}.png")
+                extra_style_img.save(extra_style_path)
+                
+                extra_laplace_img = self.generate_laplace_image(extra_style_img)
+                extra_laplace_path = os.path.join(writer_laplace_dir, f"extra_{sample_id}.png")
+                extra_laplace_img.save(extra_laplace_path)
         
         # 创建常见词汇文件
         common_words_path = os.path.join(self.data_dir, "oov.common_words")
@@ -156,7 +177,14 @@ class MockDataGenerator:
     def create_mock_unifont_pickle(self):
         """创建模拟的unifont.pickle文件"""
         unifont_path = os.path.join(self.data_dir, "unifont.pickle")
-        mock_data = {char: np.random.rand(32, 32).astype(np.float32) for char in self.letters}
+        mock_data = []
+        for char in self.letters:
+            mock_symbol = {
+                'idx': [ord(char)],
+                'mat': np.random.rand(32, 32).astype(np.float32)
+            }
+            mock_data.append(mock_symbol)
+        
         with open(unifont_path, 'wb') as f:
             import pickle
             pickle.dump(mock_data, f)
@@ -167,17 +195,24 @@ class TestIAMDatasetWithMockData(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """设置测试环境"""
-        cls.data_generator = MockDataGenerator()
+        cls.temp_dir = tempfile.mkdtemp()
+        cls.data_generator = MockDataGenerator(save_dir=cls.temp_dir)
         cls.indices, cls.text_mapping = cls.data_generator.generate_dataset(num_samples=5)
         
         # 修改文本路径字典
-        # 这可能需要修改实际的text_path变量，由于模块导入方式可能无法直接修改
-        # 我们将在测试中处理这个问题
+        import one_dm.data.loader as loader
+        loader.text_path = {
+            'train': os.path.join(cls.temp_dir, 'data/IAM64_train.txt'),
+            'test': os.path.join(cls.temp_dir, 'data/IAM64_test.txt')
+        }
     
     @classmethod
     def tearDownClass(cls):
         """清理测试环境"""
-        cls.data_generator.cleanup()
+        try:
+            shutil.rmtree(cls.temp_dir)
+        except Exception as e:
+            print(f"清理临时目录时出错: {str(e)}")
     
     def test_dataset_initialization(self):
         """测试使用模拟数据初始化数据集"""
@@ -232,21 +267,25 @@ class TestContentDataWithMockData(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """设置测试环境"""
-        cls.data_generator = MockDataGenerator()
+        cls.temp_dir = tempfile.mkdtemp()
+        cls.data_generator = MockDataGenerator(save_dir=cls.temp_dir)
         cls.data_generator.create_mock_unifont_pickle()
         
         # 保存原始数据目录路径
         cls.original_data_dir = os.getcwd()
         
         # 临时切换到模拟数据目录
-        os.chdir(cls.data_generator.base_dir)
+        os.chdir(cls.temp_dir)
     
     @classmethod
     def tearDownClass(cls):
         """清理测试环境"""
         # 切换回原始目录
         os.chdir(cls.original_data_dir)
-        cls.data_generator.cleanup()
+        try:
+            shutil.rmtree(cls.temp_dir)
+        except Exception as e:
+            print(f"清理临时目录时出错: {str(e)}")
     
     def test_content_data_initialization(self):
         """测试使用模拟数据初始化ContentData"""
@@ -287,13 +326,24 @@ class TestParagraphDatasetWithMockData(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """设置测试环境"""
-        cls.data_generator = MockDataGenerator()
-        cls.indices, cls.text_mapping = cls.data_generator.generate_dataset(num_samples=10)
+        cls.temp_dir = tempfile.mkdtemp()
+        cls.data_generator = MockDataGenerator(save_dir=cls.temp_dir)
+        cls.indices, cls.text_mapping = cls.data_generator.generate_dataset(num_samples=5)
+        
+        # 修改文本路径字典
+        import one_dm.data.loader as loader
+        loader.text_path = {
+            'train': os.path.join(cls.temp_dir, 'data/IAM64_train.txt'),
+            'test': os.path.join(cls.temp_dir, 'data/IAM64_test.txt')
+        }
     
     @classmethod
     def tearDownClass(cls):
         """清理测试环境"""
-        cls.data_generator.cleanup()
+        try:
+            shutil.rmtree(cls.temp_dir)
+        except Exception as e:
+            print(f"清理临时目录时出错: {str(e)}")
     
     def test_dataset_initialization(self):
         """测试使用模拟数据初始化数据集"""

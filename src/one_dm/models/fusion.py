@@ -9,36 +9,36 @@ from src.one_dm.models.resnet_dilation import resnet18 as resnet18_dilation
 
 ### merge the handwriting style and printed content
 class Mix_TR(nn.Module):
-    def __init__(self, d_model=256, nhead=8, num_encoder_layers=3, num_decoder_layers=3,
-                 dim_feedforward=2048, dropout=0.1, activation="relu", return_intermediate_dec=False,
-                 normalize_before=True):
-        super(Mix_TR, self).__init__()
+    def __init__(self, d_model=32):
+        super().__init__()
         
-        encoder_layer = TransformerEncoderLayer(d_model, nhead, dim_feedforward,
-                                                dropout, activation, normalize_before)
-        style_norm = nn.LayerNorm(d_model) if normalize_before else None
-        self.style_encoder = TransformerEncoder(encoder_layer, num_encoder_layers, style_norm)
-
-        fre_norm = nn.LayerNorm(d_model) if normalize_before else None
-        self.fre_encoder = TransformerEncoder(encoder_layer, num_encoder_layers, fre_norm)
-
-        ### fusion the content and style in the transformer decoder
-        decoder_layer = TransformerDecoderLayer(d_model, nhead, dim_feedforward,
-                                                dropout, activation, normalize_before)
-        decoder_norm = nn.LayerNorm(d_model) if normalize_before else None
-        self.decoder = TransformerDecoder(decoder_layer, num_decoder_layers, decoder_norm,
-                                        return_intermediate=return_intermediate_dec)
+        # 保存d_model参数
+        self.d_model = d_model
         
-        fre_decoder_norm = nn.LayerNorm(d_model) if normalize_before else None
-        self.fre_decoder = TransformerDecoder(decoder_layer, num_decoder_layers, fre_decoder_norm,
-                                        return_intermediate=return_intermediate_dec)
-        
-        self.add_position1D = PositionalEncoding(dropout=0.1, dim=d_model)
+        # 位置编码
         self.add_position2D = PositionalEncoding2D(dropout=0.1, d_model=d_model)
+        self.add_position1D = PositionalEncoding1D(d_model=d_model)
         
-        # 维度转换层
-        self.style_dim_reduction = nn.Conv2d(512, d_model, kernel_size=1)  # 风格特征降维
-        self.content_dim_reduction = nn.Linear(512, d_model)  # 内容特征降维
+        # 特征降维
+        self.style_dim_reduction = nn.Conv2d(512, d_model, kernel_size=1)
+        self.content_dim_reduction = nn.Linear(512, d_model)  # 修改为从512降到32
+        
+        # Transformer编码器和解码器层
+        encoder_layer = TransformerEncoderLayer(d_model, nhead=4, dim_feedforward=128, dropout=0.1)
+        encoder_norm = nn.LayerNorm(d_model)
+        self.style_encoder = TransformerEncoder(encoder_layer, num_layers=2, norm=encoder_norm)
+        
+        fre_encoder_layer = TransformerEncoderLayer(d_model, nhead=4, dim_feedforward=128, dropout=0.1)
+        fre_encoder_norm = nn.LayerNorm(d_model)
+        self.fre_encoder = TransformerEncoder(fre_encoder_layer, num_layers=2, norm=fre_encoder_norm)
+        
+        decoder_layer = TransformerDecoderLayer(d_model, nhead=4, dim_feedforward=128, dropout=0.1)
+        decoder_norm = nn.LayerNorm(d_model)
+        self.decoder = TransformerDecoder(decoder_layer, num_layers=2, norm=decoder_norm)
+        
+        fre_decoder_layer = TransformerDecoderLayer(d_model, nhead=4, dim_feedforward=128, dropout=0.1)
+        fre_decoder_norm = nn.LayerNorm(d_model)
+        self.fre_decoder = TransformerDecoder(fre_decoder_layer, num_layers=2, norm=fre_decoder_norm)
         
         # MLP层保持512维度的输入输出
         self.high_pro_mlp = nn.Sequential(
@@ -150,10 +150,27 @@ class Mix_TR(nn.Module):
         low_nce_emb = nn.functional.normalize(low_nce_emb, p=2, dim=-1)
 
         # 处理内容特征
-        content = rearrange(content, 'n t h w ->(n t) 1 h w').contiguous()
-        content = self.content_encoder(content)  # 输出512维
-        content = rearrange(content, '(n t) c h w -> t n (c h w)', n=style.shape[0]).contiguous()
-        content = self.content_dim_reduction(content)  # 降维到256
+        B = style.shape[0]
+        # 确保content是4D张量，并且有正确的维度
+        if isinstance(content, torch.Tensor):
+            if content.dim() == 4:  # 已经是4D张量 [B, C, H, W]
+                content_h, content_w = content.shape[-2], content.shape[-1]
+            elif content.dim() == 3:  # 3D张量 [B, H, W]
+                content = content.unsqueeze(1)  # 添加通道维度
+                content_h, content_w = content.shape[-2], content.shape[-1]
+            else:
+                # 处理其他维度情况
+                raise ValueError(f"Content tensor must be 3D or 4D, got shape {content.shape}")
+            
+            content = content.view(-1, 1, content_h, content_w)  # 展平batch和time维度
+        else:
+            raise TypeError(f"Content must be a tensor, got {type(content)}")
+            
+        content = self.content_encoder(content)  # 输出512通道
+        _, C, H, W = content.shape
+        content = content.permute(0, 2, 3, 1).reshape(-1, C)  # 重新组织维度为 (N, C)
+        content = self.content_dim_reduction(content)  # 降维到32
+        content = content.view(-1, B, self.d_model)  # 恢复维度为 (T, B, d_model)
         content = self.add_position1D(content)
 
         # Transformer处理
@@ -185,10 +202,27 @@ class Mix_TR(nn.Module):
         anchor_low_feature = anchor_low_feature * anchor_mask
 
         # content encoder
-        content = rearrange(content, 'n t h w ->(n t) 1 h w').contiguous()
-        content = self.content_encoder(content)
-        content = rearrange(content, '(n t) c h w -> t n (c h w)', n=style.shape[0]).contiguous()
-        content = self.content_dim_reduction(content)  # 降维到256
+        B = style.shape[0]
+        # 确保content是4D张量，并且有正确的维度
+        if isinstance(content, torch.Tensor):
+            if content.dim() == 4:  # 已经是4D张量 [B, C, H, W]
+                content_h, content_w = content.shape[-2], content.shape[-1]
+            elif content.dim() == 3:  # 3D张量 [B, H, W]
+                content = content.unsqueeze(1)  # 添加通道维度
+                content_h, content_w = content.shape[-2], content.shape[-1]
+            else:
+                # 处理其他维度情况
+                raise ValueError(f"Content tensor must be 3D or 4D, got shape {content.shape}")
+            
+            content = content.view(-1, 1, content_h, content_w)  # 展平batch和time维度
+        else:
+            raise TypeError(f"Content must be a tensor, got {type(content)}")
+            
+        content = self.content_encoder(content)  # 输出512通道
+        _, C, H, W = content.shape
+        content = content.permute(0, 2, 3, 1).reshape(-1, C)  # 重新组织维度为 (N, C)
+        content = self.content_dim_reduction(content)  # 降维到32
+        content = content.view(-1, B, self.d_model)  # 恢复维度为 (T, B, d_model)
         content = self.add_position1D(content)
         
         # fusion of content and style features
