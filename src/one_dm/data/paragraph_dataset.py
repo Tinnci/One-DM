@@ -173,7 +173,7 @@ class ParagraphDataset(Dataset):
         
         # 添加批次偏移量
         offset = 0
-        for i, item in batch:
+        for i, item in enumerate(batch):
             pos_info = item['position_info']
             position_info_lengths.append(pos_info.shape[0])
             
@@ -206,6 +206,88 @@ class ParagraphDataset(Dataset):
 
 class ParagraphProcessor:
     """简化版段落处理器，用于创建和处理段落数据集"""
+    
+    def extract_paragraph_features(self, layout_sample):
+        """
+        提取段落布局特征
+        
+        参数:
+            layout_sample: 包含行图像路径的样本字典
+            
+        返回:
+            特征向量: 表示段落布局特征的张量
+        """
+        try:
+            # 获取样本信息
+            writer_id = layout_sample['writer_id']
+            line_paths = layout_sample['lines']
+            
+            # 加载图像计算特征
+            line_heights = []
+            line_widths = []
+            line_spacings = []
+            prev_bottom = None
+            
+            # 逐行处理图像提取特征
+            for i, img_path in enumerate(line_paths):
+                try:
+                    # 加载图像
+                    if os.path.exists(img_path):
+                        img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+                        if img is not None:
+                            h, w = img.shape
+                            line_heights.append(h)
+                            line_widths.append(w)
+                            
+                            # 计算行间距
+                            if i > 0 and prev_bottom is not None:
+                                # 假设图像左上角是原点
+                                current_top = 0  # 当前行的顶部位置，在图像坐标系中始终为0
+                                spacing = current_top - prev_bottom
+                                line_spacings.append(spacing)
+                            
+                            # 更新前一行的底部位置
+                            prev_bottom = h
+                except Exception as e:
+                    print(f"处理图像时出错 {img_path}: {e}")
+            
+            # 计算特征统计值
+            if line_heights:
+                avg_height = sum(line_heights) / len(line_heights)
+                std_height = np.std(line_heights) if len(line_heights) > 1 else 0
+                
+                avg_width = sum(line_widths) / len(line_widths)
+                std_width = np.std(line_widths) if len(line_widths) > 1 else 0
+                
+                # 行间距特征
+                avg_spacing = sum(line_spacings) / len(line_spacings) if line_spacings else 0
+                std_spacing = np.std(line_spacings) if len(line_spacings) > 1 else 0
+                
+                # 行数特征
+                num_lines = len(line_paths)
+                
+                # 组合所有特征
+                features = [
+                    avg_height, std_height,
+                    avg_width, std_width,
+                    avg_spacing, std_spacing,
+                    num_lines,
+                    # 添加一些冗余特征保证维度为12
+                    avg_height/avg_width if avg_width > 0 else 0,  # 高宽比
+                    num_lines / 10,  # 归一化的行数
+                    avg_spacing / avg_height if avg_height > 0 else 0,  # 行间距比例
+                    std_height / avg_height if avg_height > 0 else 0,  # 行高变异系数
+                    std_width / avg_width if avg_width > 0 else 0,  # 行宽变异系数
+                ]
+            else:
+                # 如果无法提取特征，返回默认值
+                features = [0] * 12
+                
+            return torch.tensor(features, dtype=torch.float32)
+        except Exception as e:
+            print(f"提取段落特征时出错: {e}")
+            return torch.zeros(12)  # 返回12维特征向量
+
     @staticmethod
     def create_paragraph_dataset(base_dataset, output_dir, n_paragraphs=1000):
         """

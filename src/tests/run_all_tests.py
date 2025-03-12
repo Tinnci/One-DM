@@ -49,10 +49,19 @@ def run_all_tests():
                 print(f"警告: {module_name} 模块中未找到 run_tests 函数，跳过")
                 results[module_name] = False
         except ImportError as e:
-            print(f"错误: 无法导入测试模块 {module_name}: {str(e)}")
+            # 提供更详细的错误信息
+            print(f"错误: 无法导入测试模块 {module_name}，原因: {str(e)}")
+            print(f"请确保 {module_name.split('.')[-1]}.py 文件存在且无导入错误")
+            
+            # 对于test_mock_data模块，提供额外的帮助信息
+            if module_name == 'tests.test_mock_data':
+                print("提示: 模拟数据测试需要MockDataGenerator类，如果该测试不重要，可以继续运行其他测试")
+            
             results[module_name] = False
         except Exception as e:
             print(f"错误: 运行 {module_name} 测试时出现异常: {str(e)}")
+            import traceback
+            traceback.print_exc()  # 打印详细的异常信息
             results[module_name] = False
     
     # 汇总测试结果

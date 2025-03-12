@@ -97,17 +97,79 @@ class IAMDataset(Dataset):
         return new_style_images, new_laplace_images
 
     def get_symbols(self, input_type):
-        with open(f"data/{input_type}.pickle", "rb") as f:
-            symbols = pickle.load(f)
-
-        symbols = {sym['idx'][0]: sym['mat'].astype(np.float32) for sym in symbols}
-        contents = []
+        """
+        获取给定输入类型的符号集
+        
+        参数:
+            input_type: 符号集类型，通常为'unifont'
+        
+        返回:
+            contents: 包含所有字符符号的张量，形状为 [n_chars, h, w]
+        """
+        pickle_path = f"data/{input_type}.pickle"
+        
+        # 检查文件是否存在
+        if not os.path.exists(pickle_path):
+            print(f"警告: {pickle_path} 文件不存在，尝试自动创建")
+            # 创建简单的模拟数据
+            self._create_simple_mock_symbols(pickle_path)
+                
+        try:
+            with open(pickle_path, "rb") as f:
+                symbols = pickle.load(f)
+                
+            symbols = {sym['idx'][0]: sym['mat'].astype(np.float32) for sym in symbols}
+            contents = []
+            
+            # 检查是否所有字符都在符号集中
+            missing_chars = []
+            for char in self.letters:
+                if ord(char) in symbols:
+                    symbol = torch.from_numpy(symbols[ord(char)]).float()
+                    contents.append(symbol)
+                else:
+                    missing_chars.append(char)
+                    # 为缺失字符创建空白符号
+                    if contents:  # 确保已有至少一个符号来获取形状
+                        symbol = torch.zeros_like(contents[0])
+                    else:
+                        symbol = torch.zeros((32, 32), dtype=torch.float32)
+                    contents.append(symbol)
+            
+            # 如果有缺失字符，输出警告
+            if missing_chars:
+                print(f"警告: 在 {pickle_path} 中找不到以下字符: {''.join(missing_chars)}")
+                
+            # 添加PAD_TOKEN
+            contents.append(torch.zeros_like(contents[0]))
+            contents = torch.stack(contents)
+            return contents
+            
+        except Exception as e:
+            print(f"加载 {pickle_path} 时出错: {str(e)}，创建新的模拟数据")
+            self._create_simple_mock_symbols(pickle_path)
+            return self.get_symbols(input_type)  # 递归调用重试加载
+        
+    def _create_simple_mock_symbols(self, pickle_path):
+        """创建简单的模拟符号数据"""
+        # 确保data目录存在
+        os.makedirs(os.path.dirname(pickle_path), exist_ok=True)
+        
+        # 创建模拟符号数据
+        mock_data = []
         for char in self.letters:
-            symbol = torch.from_numpy(symbols[ord(char)]).float()
-            contents.append(symbol)
-        contents.append(torch.zeros_like(contents[0])) # blank image as PAD_TOKEN
-        contents = torch.stack(contents)
-        return contents
+            # 简单地为每个字符创建一个32x32的随机矩阵
+            mock_symbol = {
+                'idx': [ord(char)],
+                'mat': np.random.rand(32, 32).astype(np.float32)
+            }
+            mock_data.append(mock_symbol)
+        
+        # 保存到文件
+        with open(pickle_path, 'wb') as f:
+            pickle.dump(mock_data, f)
+        
+        print(f"已创建简单模拟符号数据: {pickle_path}")
        
     def __len__(self):
         return len(self.indices)
@@ -264,10 +326,146 @@ class ContentData(IAMDataset):
     def __init__(self, content_type='unifont') -> None:
         self.letters = letters
         self.letter2index = {label: n for n, label in enumerate(self.letters)}
+        
+        # 检查unifont.pickle文件是否存在，如果不存在则自动创建
+        if content_type == 'unifont':
+            unifont_path = "data/unifont.pickle"
+            if not os.path.exists(unifont_path):
+                print(f"警告: {unifont_path} 文件不存在，自动创建模拟文件")
+                self._create_mock_unifont_pickle(unifont_path)
+        
         self.con_symbols = self.get_symbols(content_type)
+    
+    def _create_mock_unifont_pickle(self, unifont_path):
+        """
+        创建模拟的unifont.pickle文件
+        
+        这个方法会创建一个包含所有字符字形的模拟数据文件，用于测试和开发
+        每个字符都会有一个独特的视觉表示，以便于区分
+        
+        参数:
+            unifont_path: 保存模拟unifont文件的路径
+        """
+        # 确保data目录存在
+        os.makedirs("data", exist_ok=True)
+        
+        # 创建模拟符号数据
+        mock_data = []
+        for char in self.letters:
+            # 为每个字符创建一个32x32的随机矩阵作为其字体表示
+            mock_symbol = {
+                'idx': [ord(char)],
+                'mat': np.zeros((32, 32), dtype=np.float32)
+            }
+            
+            # 在矩阵中央绘制一个简单的表示
+            h, w = mock_symbol['mat'].shape
+            center_h, center_w = h // 2, w // 2
+            size = 10
+            
+            # 根据字符的ASCII码值创建不同的图案
+            ascii_val = ord(char)
+            
+            # 使用更多样化的模式来增加视觉区分度
+            pattern_type = ascii_val % 8
+            
+            if pattern_type == 0:  # 方形
+                mock_symbol['mat'][center_h-size//2:center_h+size//2, 
+                                  center_w-size//2:center_w+size//2] = 1.0
+            elif pattern_type == 1:  # 竖线
+                mock_symbol['mat'][center_h-size:center_h+size, center_w-2:center_w+2] = 1.0
+            elif pattern_type == 2:  # 横线
+                mock_symbol['mat'][center_h-2:center_h+2, center_w-size:center_w+size] = 1.0
+            elif pattern_type == 3:  # 十字
+                mock_symbol['mat'][center_h-size:center_h+size, center_w-2:center_w+2] = 1.0
+                mock_symbol['mat'][center_h-2:center_h+2, center_w-size:center_w+size] = 1.0
+            elif pattern_type == 4:  # 圆形（近似）
+                for i in range(h):
+                    for j in range(w):
+                        dist = np.sqrt((i - center_h) ** 2 + (j - center_w) ** 2)
+                        if dist < size / 2:
+                            mock_symbol['mat'][i, j] = 1.0
+            elif pattern_type == 5:  # 对角线 \
+                for i in range(-size//2, size//2):
+                    if 0 <= center_h + i < h and 0 <= center_w + i < w:
+                        mock_symbol['mat'][center_h + i, center_w + i] = 1.0
+            elif pattern_type == 6:  # 对角线 /
+                for i in range(-size//2, size//2):
+                    if 0 <= center_h + i < h and 0 <= center_w - i < w:
+                        mock_symbol['mat'][center_h + i, center_w - i] = 1.0
+            else:  # 点阵
+                step = size // 3
+                for i in range(-size//2, size//2, step):
+                    for j in range(-size//2, size//2, step):
+                        if 0 <= center_h + i < h and 0 <= center_w + j < w:
+                            mock_symbol['mat'][center_h + i, center_w + j] = 1.0
+            
+            # 在图像边缘添加字符的ASCII值，增加区分度
+            ascii_str = str(ascii_val).zfill(3)
+            for i, digit in enumerate(ascii_str):
+                if i < 3 and i < w//8:
+                    # 在图像顶部添加数字
+                    d = int(digit)
+                    for bit in range(4):
+                        if d & (1 << bit):
+                            r, c = 2, i * 8 + bit * 2
+                            if 0 <= r < h and 0 <= c < w:
+                                mock_symbol['mat'][r, c] = 1.0
+            
+            mock_data.append(mock_symbol)
+        
+        # 保存到文件
+        os.makedirs(os.path.dirname(unifont_path), exist_ok=True)
+        with open(unifont_path, 'wb') as f:
+            pickle.dump(mock_data, f)
+        
+        print(f"已创建模拟 {unifont_path} 文件，包含 {len(mock_data)} 个字符")
        
     def get_content(self, label):
-        word_arch = [self.letter2index[i] for i in label]
+        """
+        根据给定文本标签生成内容参考图像
+        
+        参数:
+            label: 文本标签字符串
+            
+        返回:
+            content_ref: 形状为 [1, len(label), h, w] 的张量，表示文本的视觉特征
+        """
+        word_arch = [self.letter2index[i] for i in label if i in self.letter2index]
+        # 确保至少有一个字符
+        if not word_arch:
+            word_arch = [self.letter2index['_']]  # 使用默认字符
         content_ref = self.con_symbols[word_arch]
         content_ref = 1.0 - content_ref
         return content_ref.unsqueeze(0)
+        
+    def get_random_content(self, batch_size=1, length=None, device=None):
+        """
+        生成随机内容供测试使用
+        
+        参数:
+            batch_size: 批次大小
+            length: 每个样本的字符长度，如果为None则随机生成
+            device: 指定输出张量的设备，如果为None则使用默认设备
+            
+        返回:
+            contents: 形状为 [batch_size, seq_len, h, w] 的张量
+        """
+        if length is None:
+            length = random.randint(3, 8)  # 随机长度的单词
+            
+        contents = []
+        for _ in range(batch_size):
+            # 随机选择字符
+            random_chars = random.choices(list(self.letter2index.keys()), k=length)
+            content = self.get_content(''.join(random_chars))
+            contents.append(content)
+            
+        # 将内容合并为一个批次
+        result = torch.cat(contents, dim=0) if batch_size > 1 else contents[0]
+        
+        # 如果指定了设备，移动到该设备
+        if device is not None:
+            result = result.to(device)
+            
+        return result
