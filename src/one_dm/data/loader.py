@@ -335,6 +335,8 @@ class ContentData(IAMDataset):
                 self._create_mock_unifont_pickle(unifont_path)
         
         self.con_symbols = self.get_symbols(content_type)
+        # 缓存已计算的内容
+        self._content_cache = {}
     
     def _create_mock_unifont_pickle(self, unifont_path):
         """
@@ -421,23 +423,88 @@ class ContentData(IAMDataset):
         
         print(f"已创建模拟 {unifont_path} 文件，包含 {len(mock_data)} 个字符")
        
-    def get_content(self, label):
+    def get_content(self, label, device=None):
         """
         根据给定文本标签生成内容参考图像
         
         参数:
-            label: 文本标签字符串
+            label: 文本标签(字符串)或包含文本的列表/张量
+            device: 输出张量的设备，默认为None(使用默认设备)
             
         返回:
-            content_ref: 形状为 [1, len(label), h, w] 的张量，表示文本的视觉特征
+            content_ref: 形状为 [batch_size, seq_len, h, w] 的张量，表示文本的视觉特征
         """
-        word_arch = [self.letter2index[i] for i in label if i in self.letter2index]
-        # 确保至少有一个字符
-        if not word_arch:
-            word_arch = [self.letter2index['_']]  # 使用默认字符
-        content_ref = self.con_symbols[word_arch]
-        content_ref = 1.0 - content_ref
-        return content_ref.unsqueeze(0)
+        # 检查缓存
+        cache_key = str(label)
+        if cache_key in self._content_cache:
+            content = self._content_cache[cache_key]
+            if device is not None:
+                content = content.to(device)
+            return content
+        
+        # 不同类型的输入处理
+        if isinstance(label, str):
+            # 从字符串生成内容
+            word_arch = [self.letter2index[i] for i in label if i in self.letter2index]
+            if not word_arch:  # 确保至少有一个字符
+                word_arch = [self.letter2index['_']]  # 使用默认字符
+                
+            content_ref = self.con_symbols[word_arch]
+            content_ref = 1.0 - content_ref
+            content_ref = content_ref.unsqueeze(0)  # 添加批次维度
+            
+        elif isinstance(label, (list, tuple)) and all(isinstance(i, str) for i in label):
+            # 处理字符串列表
+            batch_contents = []
+            for text in label:
+                text_content = self.get_content(text)  # 递归调用单个字符串的处理
+                batch_contents.append(text_content)
+            content_ref = torch.cat(batch_contents, dim=0)
+            
+        elif isinstance(label, (list, tuple)) and all(isinstance(i, int) for i in label):
+            # 处理整数列表（假设是字符索引）
+            word_arch = [i for i in label if 0 <= i < len(self.letters)]
+            if not word_arch:
+                word_arch = [self.letter2index['_']]
+                
+            content_ref = self.con_symbols[word_arch]
+            content_ref = 1.0 - content_ref
+            content_ref = content_ref.unsqueeze(0)
+            
+        elif isinstance(label, torch.Tensor):
+            # 处理张量（可能已经是内容表示或需要转换）
+            if len(label.shape) == 2 and label.shape[1] == 1:
+                # 假设是字符索引张量
+                word_arch = label.cpu().numpy().flatten().tolist()
+                valid_indices = [i for i in word_arch if 0 <= i < len(self.letters)]
+                if not valid_indices:
+                    valid_indices = [self.letter2index['_']]
+                    
+                content_ref = self.con_symbols[valid_indices]
+                content_ref = 1.0 - content_ref
+                content_ref = content_ref.unsqueeze(0)
+                
+            elif len(label.shape) >= 3:
+                # 假设已经是内容表示
+                content_ref = label
+                
+            else:
+                # 未知张量格式，回退到默认处理
+                print(f"警告: 无法识别的张量格式: {label.shape}，使用默认内容")
+                content_ref = self.get_content("error")
+        else:
+            # 未知类型，使用默认内容
+            print(f"警告: 无法识别的内容类型: {type(label)}，使用默认内容")
+            content_ref = self.get_content("error")
+        
+        # 移动到指定设备
+        if device is not None:
+            content_ref = content_ref.to(device)
+            
+        # 缓存结果
+        self._content_cache[cache_key] = content_ref.detach().clone()
+            
+        return content_ref
         
     def get_random_content(self, batch_size=1, length=None, device=None):
         """

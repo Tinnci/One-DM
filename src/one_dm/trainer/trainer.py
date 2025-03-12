@@ -10,24 +10,26 @@ from tqdm import tqdm
 from src.one_dm.data.loader import ContentData
 import torch.distributed as dist
 import torch.nn.functional as F
+from src.one_dm.utils.device_utils import DeviceManager, move_tensors_to_device, content_type_checker
 
 class Trainer:
     def __init__(self, diffusion, unet, vae, criterion, optimizer, data_loader, 
                 logs, valid_data_loader=None, device=None, ocr_model=None, ctc_loss=None):
-        self.device = device if device is not None else (
-            torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-        )
+        # 创建设备管理器
+        self.device_manager = DeviceManager(device)
+        self.device = self.device_manager.device
         
         # 确保所有模型都在同一设备上
-        self.model = unet.to(self.device)
-        self.diffusion = diffusion.to(self.device)
+        self.model = self.device_manager.prepare_model(unet)
+        self.diffusion = self.device_manager.prepare_model(diffusion)
+        
         if vae is not None:
-            self.vae = vae.to(self.device)
+            self.vae = self.device_manager.prepare_model(vae)
         else:
             self.vae = None
             
         if ocr_model is not None:
-            self.ocr_model = ocr_model.to(self.device)
+            self.ocr_model = self.device_manager.prepare_model(ocr_model)
         else:
             self.ocr_model = None
             
@@ -43,6 +45,9 @@ class Trainer:
         self.tb_summary = SummaryWriter(logs['tboard'])
         self.save_model_dir = logs['model']
         self.save_sample_dir = logs['sample']
+        
+        # 内容数据加载器
+        self.content_loader = ContentData()
       
     def _train_iter(self, data, step, pbar):
         # 确保模型在训练模式
@@ -50,34 +55,49 @@ class Trainer:
         
         # 确保所有输入都在同一设备上
         try:
-            # 提取并移动数据到正确的设备
-            images = data['img'].to(self.device)
-            style_ref = data['style'].to(self.device)
-            laplace_ref = data['laplace'].to(self.device)
+            # 使用设备管理器准备批次数据
+            data = self.device_manager.prepare_batch(data)
             
-            # 确保content是张量且在正确的设备上
-            if isinstance(data['content'], torch.Tensor):
-                content_ref = data['content'].to(self.device)
+            # 提取数据
+            images = data['img']
+            style_ref = data['style']
+            laplace_ref = data['laplace']
+            
+            # 处理content数据
+            if 'content' in data:
+                content_ref = content_type_checker(data['content'])
+                if content_ref is None:
+                    # 如果无法转换为张量，尝试使用ContentData处理
+                    try:
+                        if isinstance(data['content'], str):
+                            content_ref = self.content_loader.get_content(data['content'], device=self.device)
+                        elif isinstance(data['content'], list) and len(data['content']) > 0:
+                            if isinstance(data['content'][0], str):
+                                # 处理字符串列表
+                                content_ref = self.content_loader.get_content(data['content'], device=self.device)
+                            else:
+                                # 未知列表类型
+                                print(f"警告: 无法识别的content列表类型: {type(data['content'][0])}")
+                                content_ref = None
+                        else:
+                            content_ref = None
+                    except Exception as e:
+                        print(f"处理content时出错: {str(e)}")
+                        content_ref = None
             else:
-                try:
-                    content_ref = torch.tensor(data['content'], device=self.device)
-                except Exception as e:
-                    print(f"无法将content转换为张量: {str(e)}")
-                    content_ref = None
-                    
-            wid = data['wid'].to(self.device)
+                content_ref = None
+                
+            wid = data['wid']
             
-            # VAE编码 - 确保VAE也在正确的设备上
-            self.vae = self.vae.to(self.device)
-            images = self.vae.encode(images).latent_dist.sample()
-            images = images * 0.18215
+            # VAE编码
+            if self.vae is not None:
+                images = self.vae.encode(images).latent_dist.sample()
+                images = images * 0.18215
     
-            # 前向传播 - 确保diffusion和model在正确的设备上
-            self.diffusion = self.diffusion.to(self.device)
-            t = self.diffusion.sample_timesteps(images.shape[0]).to(self.device)
+            # 前向传播
+            t = self.diffusion.sample_timesteps(images.shape[0])
             x_t, noise = self.diffusion.noise_images(images, t)
             
-            self.model = self.model.to(self.device)
             predicted_noise, high_nce_emb, low_nce_emb = self.model(x_t, t, style_ref, laplace_ref, content_ref, tag='train')
             
             # 计算损失
@@ -103,6 +123,8 @@ class Trainer:
     
         except Exception as e:
             print(f"训练迭代中出错: {str(e)}")
+            import traceback
+            traceback.print_exc()
         finally:
             # 无论成功与否，都释放内存
             if 'data' in locals():
@@ -116,36 +138,40 @@ class Trainer:
         self.model.train()
         
         try:
-            # 提取并移动数据到正确的设备
-            images = data['img'].to(self.device)
-            style_ref = data['style'].to(self.device)
-            laplace_ref = data['laplace'].to(self.device)
+            # 使用设备管理器准备批次数据
+            data = self.device_manager.prepare_batch(data)
             
-            # 确保content是张量且在正确的设备上
-            if isinstance(data['content'], torch.Tensor):
-                content_ref = data['content'].to(self.device)
+            # 提取数据
+            images = data['img']
+            style_ref = data['style']
+            laplace_ref = data['laplace']
+            
+            # 处理content数据
+            if 'content' in data:
+                content_ref = content_type_checker(data['content'])
+                if content_ref is None:
+                    # 尝试使用ContentData处理
+                    try:
+                        content_ref = self.content_loader.get_content(data['content'], device=self.device)
+                    except Exception as e:
+                        print(f"处理content时出错: {str(e)}")
+                        content_ref = None
             else:
-                try:
-                    content_ref = torch.tensor(data['content'], device=self.device)
-                except Exception as e:
-                    print(f"无法将content转换为张量: {str(e)}")
-                    content_ref = None
-                    
-            wid = data['wid'].to(self.device)
-            target = data['target'].to(self.device)
-            target_lengths = data['target_lengths'].to(self.device)
+                content_ref = None
+                
+            wid = data['wid']
+            target = data['target']
+            target_lengths = data['target_lengths']
             
-            # VAE编码 - 确保VAE也在正确的设备上
-            self.vae = self.vae.to(self.device)
-            latent_images = self.vae.encode(images).latent_dist.sample()
-            latent_images = latent_images * 0.18215
+            # VAE编码
+            if self.vae is not None:
+                latent_images = self.vae.encode(images).latent_dist.sample()
+                latent_images = latent_images * 0.18215
     
-            # 前向传播 - 确保diffusion和model在正确的设备上
-            self.diffusion = self.diffusion.to(self.device)
-            t = self.diffusion.sample_timesteps(latent_images.shape[0], finetune=True).to(self.device)
+            # 前向传播
+            t = self.diffusion.sample_timesteps(latent_images.shape[0], finetune=True)
             x_t, noise = self.diffusion.noise_images(latent_images, t)
             
-            self.model = self.model.to(self.device)
             x_start, predicted_noise, high_nce_emb, low_nce_emb = self.diffusion.train_ddim(
                 self.model, x_t, style_ref, laplace_ref, content_ref, t, sampling_timesteps=5
             )
@@ -153,14 +179,15 @@ class Trainer:
             # 计算损失
             recon_loss = self.recon_criterion(predicted_noise, noise)
             
-            # 确保OCR模型在正确的设备上
+            # 计算OCR损失
+            ctc_loss = torch.tensor(0.0, device=self.device)
             if self.ocr_model is not None:
-                self.ocr_model = self.ocr_model.to(self.device)
-                rec_out = self.ocr_model(x_start)
-                input_lengths = torch.IntTensor(x_start.shape[0]*[rec_out.shape[0]]).to(self.device)
-                ctc_loss = self.ctc_criterion(F.log_softmax(rec_out, dim=2), target, input_lengths, target_lengths)
-            else:
-                ctc_loss = torch.tensor(0.0, device=self.device)
+                try:
+                    rec_out = self.ocr_model(x_start)
+                    input_lengths = torch.IntTensor(x_start.shape[0]*[rec_out.shape[0]]).to(self.device)
+                    ctc_loss = self.ctc_criterion(F.log_softmax(rec_out, dim=2), target, input_lengths, target_lengths)
+                except Exception as e:
+                    print(f"计算OCR损失时出错: {str(e)}")
                 
             high_nce_loss = self.nce_criterion(high_nce_emb, labels=wid)
             low_nce_loss = self.nce_criterion(low_nce_emb, labels=wid)
@@ -186,6 +213,8 @@ class Trainer:
         
         except Exception as e:
             print(f"微调迭代中出错: {str(e)}")
+            import traceback
+            traceback.print_exc()
         finally:
             # 无论成功与否，都释放内存
             if 'data' in locals():

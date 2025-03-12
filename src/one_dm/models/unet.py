@@ -10,6 +10,7 @@ from inspect import isfunction
 import math
 import random
 from src.one_dm.models.fusion import Mix_TR
+from src.one_dm.utils.device_utils import move_model_to_device, verify_model_on_device
 
 
 def checkpoint(func, inputs, params, flag):
@@ -966,6 +967,44 @@ class UNetModel(nn.Module):
 
         
     
+    def to(self, device):
+        """将模型及其所有子模块移动到指定设备"""
+        # 先调用父类的to方法
+        super().to(device)
+        
+        # 特别处理mix_net
+        if hasattr(self, 'mix_net'):
+            self.mix_net = move_model_to_device(self.mix_net, device)
+        
+        # 处理time_embed
+        if hasattr(self, 'time_embed'):
+            self.time_embed = move_model_to_device(self.time_embed, device)
+            
+        # 处理input_blocks
+        if hasattr(self, 'input_blocks'):
+            for i, block in enumerate(self.input_blocks):
+                self.input_blocks[i] = move_model_to_device(block, device)
+                
+        # 处理middle_block
+        if hasattr(self, 'middle_block'):
+            self.middle_block = move_model_to_device(self.middle_block, device)
+            
+        # 处理output_blocks
+        if hasattr(self, 'output_blocks'):
+            for i, block in enumerate(self.output_blocks):
+                self.output_blocks[i] = move_model_to_device(block, device)
+                
+        # 处理out
+        if hasattr(self, 'out'):
+            self.out = move_model_to_device(self.out, device)
+            
+        # 验证所有参数是否都在正确的设备上
+        incorrect_params = verify_model_on_device(self, device)
+        if incorrect_params:
+            print(f"警告: 在移动UNetModel到{device}后，仍有{len(incorrect_params)}个参数在错误的设备上")
+            
+        return self
+        
     def forward(self, x, timesteps=None, style=None, laplace=None, content=None, tag='test', **kwargs):
         """
         Apply the model to an input batch.

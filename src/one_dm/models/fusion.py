@@ -6,6 +6,7 @@ from src.one_dm.models.transformer import *
 from einops import rearrange, repeat
 import math
 from src.one_dm.models.resnet_dilation import resnet18 as resnet18_dilation
+from src.one_dm.utils.device_utils import move_model_to_device, verify_model_on_device
 
 ### merge the handwriting style and printed content
 class Mix_TR(nn.Module):
@@ -184,6 +185,30 @@ class Mix_TR(nn.Module):
         if style is None or laplace is None:
             raise ValueError("Style and laplace inputs must not be None")
             
+        # 确保在同一设备上
+        device = style.device
+        if laplace.device != device:
+            laplace = laplace.to(device)
+        if isinstance(content, torch.Tensor) and content.device != device:
+            content = content.to(device)
+            
+        # 输入形状检查和预处理
+        # 打印详细输入形状信息以帮助诊断
+        if hasattr(self, 'shape_check_count'):
+            self.shape_check_count += 1
+        else:
+            self.shape_check_count = 1
+            
+        # 每10次调用打印一次形状信息，用于调试
+        if self.shape_check_count % 10 == 1:
+            print(f"Generate调用 #{self.shape_check_count}")
+            print(f"  Style形状: {style.shape}, 设备: {style.device}")
+            print(f"  Laplace形状: {laplace.shape}, 设备: {laplace.device}")
+            if isinstance(content, torch.Tensor):
+                print(f"  Content形状: {content.shape}, 设备: {content.device}")
+            else:
+                print(f"  Content类型: {type(content)}")
+            
         # 确保style和laplace至少是3维的 [batch, channels, ...]
         if style.dim() < 3:
             raise ValueError(f"Style tensor must have at least 3 dimensions, got {style.dim()}")
@@ -191,59 +216,157 @@ class Mix_TR(nn.Module):
             raise ValueError(f"Laplace tensor must have at least 3 dimensions, got {laplace.dim()}")
             
         # 处理4维输入 [batch, seq_len, height, width]
-        if style.dim() == 4:
-            if style.shape[1] == 1:
+        if style.dim() == 4 and style.shape[1] != 1:
+            # 有多个样本时，取第一个
+            anchor_style = style[:, 0:1].contiguous()
+            anchor_high = laplace[:, 0:1].contiguous()
+        else:
+            # 处理3维输入 [batch, height, width] 或已经正确的4维输入 [batch, 1, height, width]
+            if style.dim() == 3:
+                # 增加一个维度使其成为 [batch, 1, height, width]
+                anchor_style = style.unsqueeze(1).contiguous()
+                anchor_high = laplace.unsqueeze(1).contiguous()
+            else:
+                # 已经是正确的4维
                 anchor_style = style
                 anchor_high = laplace
-            else:
-                anchor_style = style[:, 0, :, :].unsqueeze(1).contiguous()
-                anchor_high = laplace[:, 0, :, :].unsqueeze(1).contiguous()
-        # 处理3维输入 [batch, height, width]
-        elif style.dim() == 3:
-            # 增加一个维度使其成为 [batch, 1, height, width]
-            anchor_style = style.unsqueeze(1).contiguous()
-            anchor_high = laplace.unsqueeze(1).contiguous()
         
-        # get the highg frequency and style feature
-        anchor_high_feature, anchor_high_emb = self.get_high_style_feature(anchor_high)
+        # 获取高频和风格特征
+        try:
+            anchor_high_feature, anchor_high_emb = self.get_high_style_feature(anchor_high)
+        except Exception as e:
+            print(f"获取高频特征时出错: {str(e)}")
+            raise
         
-        # get the low frequency and style feature
-        anchor_low = anchor_style
-        anchor_low_feature, anchor_low_emb = self.get_low_style_feature(anchor_low)
-        
-        # 正确处理mask的维度
-        B, C, H, W = anchor_low_emb.shape
-        anchor_mask = self.low_feature_filter(anchor_low_emb.view(B, C, -1).permute(0, 2, 1).reshape(-1, C))
-        anchor_mask = anchor_mask.view(H*W, B, 1)  # 调整为 (H*W, B, 1) 以匹配feature维度
-        # anchor_low_feature已经是 (H*W, B, C) 形状
-        anchor_low_feature = anchor_low_feature * anchor_mask
+        # 获取低频和风格特征
+        try:
+            anchor_low = anchor_style
+            anchor_low_feature, anchor_low_emb = self.get_low_style_feature(anchor_low)
+            
+            # 正确处理mask的维度
+            B, C, H, W = anchor_low_emb.shape
+            anchor_mask = self.low_feature_filter(anchor_low_emb.view(B, C, -1).permute(0, 2, 1).reshape(-1, C))
+            anchor_mask = anchor_mask.view(H*W, B, 1)  # 调整为 (H*W, B, 1) 以匹配feature维度
+            anchor_low_feature = anchor_low_feature * anchor_mask
+        except Exception as e:
+            print(f"获取低频特征时出错: {str(e)}")
+            raise
 
-        # content encoder
-        B = style.shape[0]
-        # 确保content是4D张量，并且有正确的维度
-        if isinstance(content, torch.Tensor):
+        # 处理内容特征
+        try:
+            B = style.shape[0]
+            # 确保content是4D张量，并且有正确的维度
+            if not isinstance(content, torch.Tensor):
+                raise TypeError(f"Content must be a tensor, got {type(content)}")
+                
+            # 处理不同维度的content
             if content.dim() == 4:  # 已经是4D张量 [B, C, H, W]
                 content_h, content_w = content.shape[-2], content.shape[-1]
+                # 确保通道数为1
+                if content.shape[1] != 1:
+                    # 如果有多个通道，取第一个通道或者平均所有通道
+                    content_tensor = content[:, 0:1].contiguous()
+                    print(f"警告: content有{content.shape[1]}个通道，已取第一个通道")
+                else:
+                    content_tensor = content
             elif content.dim() == 3:  # 3D张量 [B, H, W]
-                content = content.unsqueeze(1)  # 添加通道维度
-                content_h, content_w = content.shape[-2], content.shape[-1]
+                content_tensor = content.unsqueeze(1)  # 添加通道维度
+                content_h, content_w = content_tensor.shape[-2], content_tensor.shape[-1]
+            elif content.dim() == 2:  # 2D张量 [H, W]
+                # 添加批次和通道维度
+                content_tensor = content.unsqueeze(0).unsqueeze(0)
+                content_h, content_w = content_tensor.shape[-2], content_tensor.shape[-1]
+                
+                # 如果批次大小大于1，复制内容
+                if B > 1:
+                    content_tensor = content_tensor.expand(B, -1, -1, -1)
             else:
                 # 处理其他维度情况
-                raise ValueError(f"Content tensor must be 3D or 4D, got shape {content.shape}")
+                raise ValueError(f"Content tensor must be 2D, 3D or 4D, got shape {content.shape}")
             
-            content = content.view(-1, 1, content_h, content_w)  # 展平batch和time维度
-        else:
-            raise TypeError(f"Content must be a tensor, got {type(content)}")
+            # 确保content_tensor是单通道的
+            if content_tensor.shape[1] != 1:
+                print(f"警告: 调整content通道数从{content_tensor.shape[1]}到1")
+                # 如果有多个通道，取第一个通道
+                content_tensor = content_tensor[:, 0:1].contiguous()
+                
+            # 编码内容特征
+            content_encoded = self.content_encoder(content_tensor)  # 输出512通道
+            _, C, H, W = content_encoded.shape
+            content_flat = content_encoded.permute(0, 2, 3, 1).reshape(-1, C)  # 重新组织维度为 (N, C)
+            content_reduced = self.content_dim_reduction(content_flat)  # 降维到32
+            content_reshaped = content_reduced.view(-1, B, self.d_model)  # 恢复维度为 (T, B, d_model)
+            content_positioned = self.add_position1D(content_reshaped)
+        except Exception as e:
+            print(f"处理内容特征时出错: {str(e)}")
+            print(f"Content信息: 类型={type(content)}")
+            if isinstance(content, torch.Tensor):
+                print(f"  形状={content.shape}, 设备={content.device}, 类型={content.dtype}")
+            raise
+        
+        # 融合内容和风格特征
+        try:
+            style_hs = self.decoder(content_positioned, anchor_low_feature, tgt_mask=None)
+            hs = self.fre_decoder(style_hs[0], anchor_high_feature, tgt_mask=None)
+            return hs[0].permute(1, 0, 2).contiguous()
+        except Exception as e:
+            print(f"特征融合时出错: {str(e)}")
+            raise
+
+    def to(self, device):
+        """将模型及其所有子模块移动到指定设备"""
+        # 先调用父类的to方法
+        super().to(device)
+        
+        # 处理位置编码
+        if hasattr(self, 'add_position2D'):
+            self.add_position2D = move_model_to_device(self.add_position2D, device)
+        if hasattr(self, 'add_position1D'):
+            self.add_position1D = move_model_to_device(self.add_position1D, device)
             
-        content = self.content_encoder(content)  # 输出512通道
-        _, C, H, W = content.shape
-        content = content.permute(0, 2, 3, 1).reshape(-1, C)  # 重新组织维度为 (N, C)
-        content = self.content_dim_reduction(content)  # 降维到32
-        content = content.view(-1, B, self.d_model)  # 恢复维度为 (T, B, d_model)
-        content = self.add_position1D(content)
-        
-        # fusion of content and style features
-        style_hs = self.decoder(content, anchor_low_feature, tgt_mask=None)
-        hs = self.fre_decoder(style_hs[0], anchor_high_feature, tgt_mask=None)
-        
-        return hs[0].permute(1, 0, 2).contiguous()
+        # 处理特征降维
+        if hasattr(self, 'style_dim_reduction'):
+            self.style_dim_reduction = move_model_to_device(self.style_dim_reduction, device)
+        if hasattr(self, 'content_dim_reduction'):
+            self.content_dim_reduction = move_model_to_device(self.content_dim_reduction, device)
+            
+        # 处理Transformer编码器和解码器
+        if hasattr(self, 'style_encoder'):
+            self.style_encoder = move_model_to_device(self.style_encoder, device)
+        if hasattr(self, 'fre_encoder'):
+            self.fre_encoder = move_model_to_device(self.fre_encoder, device)
+        if hasattr(self, 'decoder'):
+            self.decoder = move_model_to_device(self.decoder, device)
+        if hasattr(self, 'fre_decoder'):
+            self.fre_decoder = move_model_to_device(self.fre_decoder, device)
+            
+        # 处理MLP层
+        if hasattr(self, 'high_pro_mlp'):
+            self.high_pro_mlp = move_model_to_device(self.high_pro_mlp, device)
+        if hasattr(self, 'low_pro_mlp'):
+            self.low_pro_mlp = move_model_to_device(self.low_pro_mlp, device)
+        if hasattr(self, 'low_feature_filter'):
+            self.low_feature_filter = move_model_to_device(self.low_feature_filter, device)
+            
+        # 处理NCE投影层
+        if hasattr(self, 'nce_projection'):
+            self.nce_projection = move_model_to_device(self.nce_projection, device)
+            
+        # 处理特征编码器
+        if hasattr(self, 'Feat_Encoder'):
+            self.Feat_Encoder = move_model_to_device(self.Feat_Encoder, device)
+        if hasattr(self, 'style_dilation_layer'):
+            self.style_dilation_layer = move_model_to_device(self.style_dilation_layer, device)
+        if hasattr(self, 'freq_encoder'):
+            self.freq_encoder = move_model_to_device(self.freq_encoder, device)
+        if hasattr(self, 'freq_dilation_layer'):
+            self.freq_dilation_layer = move_model_to_device(self.freq_dilation_layer, device)
+        if hasattr(self, 'content_encoder'):
+            self.content_encoder = move_model_to_device(self.content_encoder, device)
+            
+        # 验证所有参数是否都在正确的设备上
+        incorrect_params = verify_model_on_device(self, device)
+        if incorrect_params:
+            print(f"警告: 在移动Mix_TR到{device}后，仍有{len(incorrect_params)}个参数在错误的设备上")
+            
+        return self

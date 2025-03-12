@@ -5,6 +5,7 @@ from tqdm import tqdm
 from src.one_dm.models.diffusion import Diffusion
 from src.one_dm.models.unet import UNetModel
 from src.one_dm.models.transformer import TransformerEncoder, TransformerDecoder, TransformerEncoderLayer, TransformerDecoderLayer
+from src.one_dm.utils.device_utils import move_model_to_device, verify_model_on_device
 
 class ParagraphDiffusion(Diffusion):
     """
@@ -108,13 +109,32 @@ class ParagraphDiffusion(Diffusion):
             
     def to(self, device):
         """将所有模型组件移至同一设备"""
+        # 先调用父类的to方法
         super().to(device)
+        self.device = device
+        
+        # 使用move_model_to_device递归地移动所有子模块
         if hasattr(self, 'unet'):
-            self.unet = self.unet.to(device)
+            self.unet = move_model_to_device(self.unet, device)
         if hasattr(self, 'encoder'):
-            self.encoder = self.encoder.to(device)
+            self.encoder = move_model_to_device(self.encoder, device)
         if hasattr(self, 'decoder'):
-            self.decoder = self.decoder.to(device)
+            self.decoder = move_model_to_device(self.decoder, device)
+            
+        # 移动所有tensor属性
+        for attr_name in dir(self):
+            if attr_name.startswith('__'):
+                continue
+                
+            attr = getattr(self, attr_name)
+            if isinstance(attr, torch.Tensor):
+                setattr(self, attr_name, attr.to(device))
+        
+        # 验证所有参数是否都在正确的设备上
+        incorrect_params = verify_model_on_device(self, device)
+        if incorrect_params:
+            print(f"警告: 在移动ParagraphDiffusion模型到{device}后，仍有{len(incorrect_params)}个参数在错误的设备上")
+        
         return self
     
     def forward(self, x, t=None, styles=None, laplace=None, content=None, 
