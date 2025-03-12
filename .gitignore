@@ -17,6 +17,7 @@ models/One-DM-ckpt.pt
 # 测试输出目录
 test_output/
 outputs/
+examples/
 
 # 临时文件
 *.pyc
