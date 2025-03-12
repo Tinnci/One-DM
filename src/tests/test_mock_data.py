@@ -91,16 +91,21 @@ class MockDataGenerator:
     def generate_laplace_image(self, img):
         """生成简单的拉普拉斯边缘图像"""
         # 转换为灰度图并计算简单边缘
-        img_array = np.array(img.convert('L'))
-        edges = np.zeros_like(img_array)
+        img_array = np.array(img.convert('L'), dtype=np.int32)  # 使用int32避免溢出
+        edges = np.zeros_like(img_array, dtype=np.int32)
         
         # 简单的边缘检测
         for i in range(1, img_array.shape[0] - 1):
             for j in range(1, img_array.shape[1] - 1):
-                edges[i, j] = 4 * img_array[i, j] - img_array[i+1, j] - img_array[i-1, j] - img_array[i, j+1] - img_array[i, j-1]
+                # 计算拉普拉斯算子
+                edges[i, j] = 4 * int(img_array[i, j]) - int(img_array[i+1, j]) - int(img_array[i-1, j]) - int(img_array[i, j+1]) - int(img_array[i, j-1])
+        
+        # 确保值在0-255范围内
+        edges = np.abs(edges)
+        edges = np.clip(edges, 0, 255)
         
         # 转回PIL图像
-        edge_img = Image.fromarray(np.abs(edges).astype(np.uint8))
+        edge_img = Image.fromarray(edges.astype(np.uint8))
         return edge_img
     
     def generate_random_text(self, length=5):

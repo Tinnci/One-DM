@@ -499,13 +499,33 @@ class TestIntegration(unittest.TestCase):
                     # 从数据加载器获取一个样本
                     test_batch = next(iter(dataloader))
                     test_img = test_batch['img'].to(self.device)
+                    test_style = test_batch.get('style', None)
+                    if test_style is not None:
+                        test_style = test_style.to(self.device)
+                    test_laplace = test_batch.get('laplace', None)
+                    if test_laplace is not None:
+                        test_laplace = test_laplace.to(self.device)
+                    test_content = test_batch.get('content', None)
+                    if test_content is not None:
+                        test_content = test_content.to(self.device)
+                    
+                    # 创建随机噪声作为起点
+                    batch_size = 2
+                    x = torch.randn((batch_size, model.channels, model.image_size, model.image_size)).to(self.device)
                     
                     # 尝试生成样本
-                    gen_samples = model.sample(batch_size=2, steps=2)
+                    gen_samples = model.sample(
+                        model=model,
+                        x=x,
+                        styles=test_style,
+                        laplace=test_laplace,
+                        content=test_content,
+                        sampling_timesteps=2
+                    )
                     self.assertIsNotNone(gen_samples)
                     
                     # 检查样本形状
-                    expected_shape = (2, config['data']['channels'], config['data']['image_size'], config['data']['image_size'])
+                    expected_shape = (batch_size, config['data']['channels'], config['data']['image_size'], config['data']['image_size'])
                     self.assertEqual(gen_samples.shape, expected_shape)
                     
                     print("推理测试通过")
@@ -568,8 +588,36 @@ class TestIntegration(unittest.TestCase):
             
             # 测试Trainer的方法
             try:
+                # 创建一个简单的VAE模拟对象
+                class MockVAE:
+                    def __init__(self):
+                        pass
+                    
+                    def encode(self, x):
+                        class LatentDist:
+                            def __init__(self, x):
+                                self.x = x
+                            
+                            def sample(self):
+                                return self.x
+                        
+                        return LatentDist(x)
+                
+                # 替换为模拟VAE
+                trainer.vae = MockVAE()
+                
                 # 测试训练一个批次
                 batch = next(iter(dataloader))
+                
+                # 确保batch中包含所有必要的键
+                if 'wid' not in batch:
+                    batch['wid'] = torch.zeros(batch['img'].shape[0], dtype=torch.long).to(self.device)
+                
+                # 确保所有张量都在正确的设备上
+                for key in batch:
+                    if isinstance(batch[key], torch.Tensor):
+                        batch[key] = batch[key].to(self.device)
+                
                 trainer._train_iter(batch, step=0, pbar=None)
                 print("Trainer训练方法测试通过")
             except Exception as e:
@@ -705,13 +753,33 @@ class TestIntegration(unittest.TestCase):
                     # 从数据加载器获取一个样本
                     test_batch = next(iter(train_dataset))
                     test_img = test_batch['img'].to(self.device)
+                    test_style = test_batch.get('style', None)
+                    if test_style is not None:
+                        test_style = test_style.to(self.device)
+                    test_laplace = test_batch.get('laplace', None)
+                    if test_laplace is not None:
+                        test_laplace = test_laplace.to(self.device)
+                    test_content = test_batch.get('content', None)
+                    if test_content is not None:
+                        test_content = test_content.to(self.device)
+                    
+                    # 创建随机噪声作为起点
+                    batch_size = 2
+                    x = torch.randn((batch_size, model.channels, model.image_size, model.image_size)).to(self.device)
                     
                     # 尝试生成样本
-                    gen_samples = model.sample(batch_size=2, steps=2)
+                    gen_samples = model.sample(
+                        model=model,
+                        x=x,
+                        styles=test_style,
+                        laplace=test_laplace,
+                        content=test_content,
+                        sampling_timesteps=2
+                    )
                     self.assertIsNotNone(gen_samples)
                     
                     # 检查样本形状
-                    expected_shape = (2, config['data']['channels'], config['data']['image_size'], config['data']['image_size'])
+                    expected_shape = (batch_size, config['data']['channels'], config['data']['image_size'], config['data']['image_size'])
                     self.assertEqual(gen_samples.shape, expected_shape)
                     
                     # 保存生成的样本
