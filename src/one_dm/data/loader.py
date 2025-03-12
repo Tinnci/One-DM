@@ -13,8 +13,8 @@ from einops import rearrange, repeat
 import time
 import torch.nn.functional as F
 
-text_path = {'train':'data/IAM64_train.txt',
-             'test':'data/IAM64_test.txt'}
+text_path = {'train': 'IAM64_train.txt',
+             'test': 'IAM64_test.txt'}
 
 generate_type = {'iv_s':['train', 'data/in_vocab.subset.tro.37'],
                 'iv_u':['test', 'data/in_vocab.subset.tro.37'],
@@ -30,10 +30,10 @@ class IAMDataset(Dataset):
     def __init__(self, image_path, style_path, laplace_path, type, content_type='unifont', max_len=9):
         self.max_len = max_len
         self.style_len = style_len
-        self.data_dict = self.load_data(text_path[type])
         self.image_path = os.path.join(image_path, type)
         self.style_path = os.path.join(style_path, type)
         self.laplace_path = os.path.join(laplace_path, type)
+        self.data_dict = self.load_data(text_path[type])
 
         self.letters = letters
         self.tokens = {"PAD_TOKEN": len(self.letters)}
@@ -51,6 +51,11 @@ class IAMDataset(Dataset):
 
 
     def load_data(self, data_path):
+        """加载数据集"""
+        # 如果 data_path 是相对路径，则使用 image_path 的父目录作为基准
+        if not os.path.isabs(data_path):
+            data_path = os.path.join(os.path.dirname(os.path.dirname(self.image_path)), "data", data_path)
+        
         with open(data_path, 'r') as f:
             train_data = f.readlines()
             train_data = [i.strip().split(' ') for i in train_data]
@@ -109,7 +114,12 @@ class IAMDataset(Dataset):
 
     ### Borrowed from GANwriting ###
     def label_padding(self, labels, max_len):
-        ll = [self.letter2index[i] for i in labels]
+        # 过滤掉不在 letter2index 中的字符
+        filtered_labels = [i for i in labels if i in self.letter2index]
+        if not filtered_labels:  # 如果过滤后为空，使用默认字符
+            filtered_labels = ['_']  # 使用空格作为默认字符
+        
+        ll = [self.letter2index[i] for i in filtered_labels]
         num = max_len - len(ll)
         if not num == 0:
             ll.extend([self.tokens["PAD_TOKEN"]] * num)  # replace PAD_TOKEN
