@@ -14,112 +14,185 @@ import torch.nn.functional as F
 class Trainer:
     def __init__(self, diffusion, unet, vae, criterion, optimizer, data_loader, 
                 logs, valid_data_loader=None, device=None, ocr_model=None, ctc_loss=None):
-        self.model = unet
-        self.diffusion = diffusion
-        self.vae = vae
+        self.device = device if device is not None else (
+            torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        )
+        
+        # 确保所有模型都在同一设备上
+        self.model = unet.to(self.device)
+        self.diffusion = diffusion.to(self.device)
+        if vae is not None:
+            self.vae = vae.to(self.device)
+        else:
+            self.vae = None
+            
+        if ocr_model is not None:
+            self.ocr_model = ocr_model.to(self.device)
+        else:
+            self.ocr_model = None
+            
+        # 损失函数和优化器
         self.recon_criterion = criterion['recon']
         self.nce_criterion = criterion['nce']
+        self.ctc_criterion = ctc_loss
         self.optimizer = optimizer
+        
+        # 数据加载器和日志
         self.data_loader = data_loader
         self.valid_data_loader = valid_data_loader
         self.tb_summary = SummaryWriter(logs['tboard'])
         self.save_model_dir = logs['model']
         self.save_sample_dir = logs['sample']
-        self.ocr_model = ocr_model
-        self.ctc_criterion = ctc_loss
-        self.device = device
       
     def _train_iter(self, data, step, pbar):
+        # 确保模型在训练模式
         self.model.train()
-        # prepare input
-
-        images, style_ref, laplace_ref, content_ref, wid = data['img'].to(self.device), \
-            data['style'].to(self.device), \
-            data['laplace'].to(self.device), \
-            data['content'].to(self.device), \
-            data['wid'].to(self.device)
         
-        # vae encode
-        images = self.vae.encode(images).latent_dist.sample()
-        images = images * 0.18215
-
-
-        # forward
-        t = self.diffusion.sample_timesteps(images.shape[0]).to(self.device)
-        x_t, noise = self.diffusion.noise_images(images, t)
-        
-       
-        predicted_noise, high_nce_emb, low_nce_emb = self.model(x_t, t, style_ref, laplace_ref, content_ref, tag='train')
-        # calculate loss
-        recon_loss = self.recon_criterion(predicted_noise, noise)
-        high_nce_loss = self.nce_criterion(high_nce_emb, labels=wid)
-        low_nce_loss = self.nce_criterion(low_nce_emb, labels=wid)
-        loss = recon_loss + high_nce_loss + low_nce_loss
-
-        # backward and update trainable parameters
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-
-        if dist.get_rank() == 0:
-            # log file
-            loss_dict = {"reconstruct_loss": recon_loss.item(), "high_nce_loss": high_nce_loss.item(),
-                         "low_nce_loss": low_nce_loss.item()}
-            self.tb_summary.add_scalars("loss", loss_dict, step)
-            self._progress(recon_loss.item(), pbar)
-
-        del data, loss
-        torch.cuda.empty_cache()
+        # 确保所有输入都在同一设备上
+        try:
+            # 提取并移动数据到正确的设备
+            images = data['img'].to(self.device)
+            style_ref = data['style'].to(self.device)
+            laplace_ref = data['laplace'].to(self.device)
+            
+            # 确保content是张量且在正确的设备上
+            if isinstance(data['content'], torch.Tensor):
+                content_ref = data['content'].to(self.device)
+            else:
+                try:
+                    content_ref = torch.tensor(data['content'], device=self.device)
+                except Exception as e:
+                    print(f"无法将content转换为张量: {str(e)}")
+                    content_ref = None
+                    
+            wid = data['wid'].to(self.device)
+            
+            # VAE编码 - 确保VAE也在正确的设备上
+            self.vae = self.vae.to(self.device)
+            images = self.vae.encode(images).latent_dist.sample()
+            images = images * 0.18215
+    
+            # 前向传播 - 确保diffusion和model在正确的设备上
+            self.diffusion = self.diffusion.to(self.device)
+            t = self.diffusion.sample_timesteps(images.shape[0]).to(self.device)
+            x_t, noise = self.diffusion.noise_images(images, t)
+            
+            self.model = self.model.to(self.device)
+            predicted_noise, high_nce_emb, low_nce_emb = self.model(x_t, t, style_ref, laplace_ref, content_ref, tag='train')
+            
+            # 计算损失
+            recon_loss = self.recon_criterion(predicted_noise, noise)
+            high_nce_loss = self.nce_criterion(high_nce_emb, labels=wid)
+            low_nce_loss = self.nce_criterion(low_nce_emb, labels=wid)
+            loss = recon_loss + high_nce_loss + low_nce_loss
+    
+            # 反向传播和参数更新
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+    
+            if dist.get_rank() == 0:
+                # 记录损失
+                loss_dict = {
+                    "reconstruct_loss": recon_loss.item(), 
+                    "high_nce_loss": high_nce_loss.item(),
+                    "low_nce_loss": low_nce_loss.item()
+                }
+                self.tb_summary.add_scalars("loss", loss_dict, step)
+                self._progress(recon_loss.item(), pbar)
+    
+        except Exception as e:
+            print(f"训练迭代中出错: {str(e)}")
+        finally:
+            # 无论成功与否，都释放内存
+            if 'data' in locals():
+                del data
+            if 'loss' in locals():
+                del loss
+            torch.cuda.empty_cache()
 
     def _finetune_iter(self, data, step, pbar):
+        # 确保模型在训练模式
         self.model.train()
-        # prepare input
-
-        images, style_ref, laplace_ref, content_ref, wid, target, target_lengths = data['img'].to(self.device), \
-            data['style'].to(self.device), \
-            data['laplace'].to(self.device), \
-            data['content'].to(self.device), \
-            data['wid'].to(self.device), \
-            data['target'].to(self.device), \
-            data['target_lengths'].to(self.device)
         
-        # vae encode
-        latent_images = self.vae.encode(images).latent_dist.sample()
-        latent_images = latent_images * 0.18215
-
-
-        # forward
-        t = self.diffusion.sample_timesteps(latent_images.shape[0], finetune=True).to(self.device)
-        x_t, noise = self.diffusion.noise_images(latent_images, t)
+        try:
+            # 提取并移动数据到正确的设备
+            images = data['img'].to(self.device)
+            style_ref = data['style'].to(self.device)
+            laplace_ref = data['laplace'].to(self.device)
+            
+            # 确保content是张量且在正确的设备上
+            if isinstance(data['content'], torch.Tensor):
+                content_ref = data['content'].to(self.device)
+            else:
+                try:
+                    content_ref = torch.tensor(data['content'], device=self.device)
+                except Exception as e:
+                    print(f"无法将content转换为张量: {str(e)}")
+                    content_ref = None
+                    
+            wid = data['wid'].to(self.device)
+            target = data['target'].to(self.device)
+            target_lengths = data['target_lengths'].to(self.device)
+            
+            # VAE编码 - 确保VAE也在正确的设备上
+            self.vae = self.vae.to(self.device)
+            latent_images = self.vae.encode(images).latent_dist.sample()
+            latent_images = latent_images * 0.18215
+    
+            # 前向传播 - 确保diffusion和model在正确的设备上
+            self.diffusion = self.diffusion.to(self.device)
+            t = self.diffusion.sample_timesteps(latent_images.shape[0], finetune=True).to(self.device)
+            x_t, noise = self.diffusion.noise_images(latent_images, t)
+            
+            self.model = self.model.to(self.device)
+            x_start, predicted_noise, high_nce_emb, low_nce_emb = self.diffusion.train_ddim(
+                self.model, x_t, style_ref, laplace_ref, content_ref, t, sampling_timesteps=5
+            )
+     
+            # 计算损失
+            recon_loss = self.recon_criterion(predicted_noise, noise)
+            
+            # 确保OCR模型在正确的设备上
+            if self.ocr_model is not None:
+                self.ocr_model = self.ocr_model.to(self.device)
+                rec_out = self.ocr_model(x_start)
+                input_lengths = torch.IntTensor(x_start.shape[0]*[rec_out.shape[0]]).to(self.device)
+                ctc_loss = self.ctc_criterion(F.log_softmax(rec_out, dim=2), target, input_lengths, target_lengths)
+            else:
+                ctc_loss = torch.tensor(0.0, device=self.device)
+                
+            high_nce_loss = self.nce_criterion(high_nce_emb, labels=wid)
+            low_nce_loss = self.nce_criterion(low_nce_emb, labels=wid)
+            loss = recon_loss + high_nce_loss + low_nce_loss + 0.1*ctc_loss
+    
+            # 反向传播和参数更新
+            self.optimizer.zero_grad()
+            loss.backward()
+            if cfg.SOLVER.GRAD_L2_CLIP > 0:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), cfg.SOLVER.GRAD_L2_CLIP)
+            self.optimizer.step()
+    
+            if dist.get_rank() == 0:
+                # 记录损失
+                loss_dict = {
+                    "reconstruct_loss": recon_loss.item(), 
+                    "high_nce_loss": high_nce_loss.item(),
+                    "low_nce_loss": low_nce_loss.item(), 
+                    "ctc_loss": ctc_loss.item()
+                }
+                self.tb_summary.add_scalars("loss", loss_dict, step)
+                self._progress(recon_loss.item(), pbar)
         
-        x_start, predicted_noise, high_nce_emb, low_nce_emb = self.diffusion.train_ddim(self.model, x_t, style_ref, laplace_ref,
-                                                        content_ref, t, sampling_timesteps=5)
- 
-        # calculate loss
-        recon_loss = self.recon_criterion(predicted_noise, noise)
-        rec_out = self.ocr_model(x_start)
-        input_lengths = torch.IntTensor(x_start.shape[0]*[rec_out.shape[0]])
-        ctc_loss = self.ctc_criterion(F.log_softmax(rec_out, dim=2), target, input_lengths, target_lengths)
-        high_nce_loss = self.nce_criterion(high_nce_emb, labels=wid)
-        low_nce_loss = self.nce_criterion(low_nce_emb, labels=wid)
-        loss = recon_loss + high_nce_loss + low_nce_loss + 0.1*ctc_loss
-
-        # backward and update trainable parameters
-        self.optimizer.zero_grad()
-        loss.backward()
-        if cfg.SOLVER.GRAD_L2_CLIP > 0:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), cfg.SOLVER.GRAD_L2_CLIP)
-        self.optimizer.step()
-
-        if dist.get_rank() == 0:
-            # log file
-            loss_dict = {"reconstruct_loss": recon_loss.item(), "high_nce_loss": high_nce_loss.item(),
-                         "low_nce_loss": low_nce_loss.item(), "ctc_loss": ctc_loss.item()}
-            self.tb_summary.add_scalars("loss", loss_dict, step)
-            self._progress(recon_loss.item(), pbar)
-
-        del data, loss
-        torch.cuda.empty_cache()
+        except Exception as e:
+            print(f"微调迭代中出错: {str(e)}")
+        finally:
+            # 无论成功与否，都释放内存
+            if 'data' in locals():
+                del data
+            if 'loss' in locals():
+                del loss
+            torch.cuda.empty_cache()
 
     def _save_images(self, images, path):
         grid = torchvision.utils.make_grid(images)

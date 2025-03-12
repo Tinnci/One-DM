@@ -174,3 +174,47 @@ def check_tensor_device(tensor_or_container):
     
     _check_device(tensor_or_container)
     return list(set(devices))  # 返回唯一的设备列表
+
+def ensure_same_device(inputs, target_device=None):
+    """
+    确保所有输入张量都在同一设备上
+    
+    参数:
+        inputs: 单个张量或包含张量的字典、列表或元组
+        target_device: 目标设备。如果为None，则使用第一个找到的张量的设备
+    
+    返回:
+        处理后的输入，所有张量都在同一设备上
+    """
+    # 如果输入为None，直接返回
+    if inputs is None:
+        return None
+    
+    # 找出输入中的所有设备
+    devices = check_tensor_device(inputs)
+    
+    # 如果没有张量，直接返回
+    if not devices:
+        return inputs
+    
+    # 确定目标设备
+    if target_device is None:
+        target_device = devices[0]  # 使用第一个找到的设备
+    else:
+        if isinstance(target_device, str):
+            target_device = torch.device(target_device)
+    
+    # 如果所有张量已经在同一设备上，直接返回
+    if len(devices) == 1 and devices[0] == target_device:
+        return inputs
+    
+    # 移动张量到目标设备
+    return move_to_device(inputs, target_device)
+
+# 示例使用：在模型的forward方法开始处
+# def forward(self, x, *args, **kwargs):
+#     # 确保所有输入在同一设备上
+#     device = x.device  # 或者 self.device
+#     x = ensure_same_device(x, device)
+#     args = [ensure_same_device(arg, device) for arg in args]
+#     kwargs = {k: ensure_same_device(v, device) for k, v in kwargs.items()}

@@ -103,6 +103,31 @@ class ParagraphUNetModel(UNetModel):
             position_info: 词的位置信息，形状为 [batch_size, n_words, 2]
             tag: 标志是训练还是测试
         """
+        # 确保所有输入在同一设备上
+        device = x.device
+        
+        if timesteps is not None:
+            timesteps = timesteps.to(device)
+        if style is not None:
+            style = style.to(device)
+        if laplace is not None:
+            laplace = laplace.to(device)
+        if content is not None:
+            # 确保content是张量
+            if isinstance(content, torch.Tensor):
+                content = content.to(device)
+            else:
+                try:
+                    content = torch.tensor(content, device=device)
+                except Exception as e:
+                    print(f"无法将content转换为张量: {str(e)}")
+                    content = None
+        
+        if paragraph_features is not None:
+            paragraph_features = paragraph_features.to(device)
+        if position_info is not None:
+            position_info = position_info.to(device)
+        
         hs = []
         t_emb = self.timestep_embedding(timesteps, self.model_channels, repeat_only=False)
         emb = self.time_embed(t_emb)
@@ -158,11 +183,16 @@ class ParagraphUNetModel(UNetModel):
         """
         从UNetModel中提取出来的时间步嵌入方法
         """
+        if timesteps is None:
+            return None
+            
+        device = timesteps.device
+        
         if not repeat_only:
             half = dim // 2
             freqs = torch.exp(
-                -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
-            ).to(device=timesteps.device)
+                -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32, device=device) / half
+            )
             args = timesteps[:, None].float() * freqs[None]
             embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
             if dim % 2:

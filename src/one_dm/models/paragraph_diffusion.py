@@ -11,8 +11,6 @@ class ParagraphDiffusion(Diffusion):
     扩展Diffusion类以支持段落级特征的生成
     """
     def __init__(self, config=None, noise_steps=1000, noise_offset=0, beta_start=1e-4, beta_end=0.02, device=None):
-        super().__init__(noise_steps, noise_offset, beta_start, beta_end, device)
-        
         # 从配置中获取参数
         if config is None:
             config = {
@@ -42,6 +40,14 @@ class ParagraphDiffusion(Diffusion):
                     }
                 }
             }
+        
+        # 先调用父类的初始化方法
+        super().__init__(noise_steps, noise_offset, beta_start, beta_end, device)
+        
+        # 保存一些配置参数
+        self.content_emb_size = config['model']['content_emb_size']
+        self.image_size = config['data']['image_size']
+        self.channels = config['data']['channels']
         
         # 创建模型组件
         unet_config = config['model']['unet']
@@ -96,10 +102,20 @@ class ParagraphDiffusion(Diffusion):
             norm=decoder_norm
         )
         
-        # 其他参数
-        self.content_emb_size = config['model']['content_emb_size']
-        self.image_size = config['data']['image_size']
-        self.channels = config['data']['channels']
+        # 将模型移动到指定设备
+        if device:
+            self.to(device)
+            
+    def to(self, device):
+        """将所有模型组件移至同一设备"""
+        super().to(device)
+        if hasattr(self, 'unet'):
+            self.unet = self.unet.to(device)
+        if hasattr(self, 'encoder'):
+            self.encoder = self.encoder.to(device)
+        if hasattr(self, 'decoder'):
+            self.decoder = self.decoder.to(device)
+        return self
     
     def forward(self, x, t=None, styles=None, laplace=None, content=None, 
                 paragraph_features=None, position_info=None, tag=None):
@@ -115,15 +131,46 @@ class ParagraphDiffusion(Diffusion):
             position_info: 位置信息
             tag: 标记（用于训练或推理）
         """
+        # 确定当前设备
+        device = self.device if self.device is not None else x.device
+        
         # 处理元组输入
         if isinstance(x, tuple):
             x, styles, laplace, content = x
             tag = 'test'  # 默认为测试模式
         
+        # 确保所有输入都在同一设备上
+        x = x.to(device)
+        
         # 如果没有提供时间步，使用随机时间步
         if t is None:
             batch_size = x.shape[0]
-            t = self.sample_timesteps(batch_size).to(x.device)
+            t = self.sample_timesteps(batch_size).to(device)
+        else:
+            t = t.to(device)
+        
+        # 确保其他输入也在同一设备上
+        if styles is not None:
+            styles = styles.to(device)
+        if laplace is not None:
+            laplace = laplace.to(device)
+        if content is not None:
+            # 检查content类型，确保是张量
+            if isinstance(content, torch.Tensor):
+                content = content.to(device)
+            else:
+                try:
+                    content = torch.tensor(content, device=device)
+                except Exception as e:
+                    print(f"无法将content转换为张量: {str(e)}")
+                    # 提供错误处理的回退方案
+                    content = None
+        
+        # 处理其他特殊输入
+        if paragraph_features is not None:
+            paragraph_features = paragraph_features.to(device)
+        if position_info is not None:
+            position_info = position_info.to(device)
         
         # 使用UNet进行特征提取
         if tag == 'train':
@@ -177,7 +224,34 @@ class ParagraphDiffusion(Diffusion):
             sampling_timesteps: 采样步数
             eta: 随机性参数
         """
+        # 确保模型在评估模式
         model.eval()
+        
+        # 确定设备并确保所有输入在同一设备上
+        device = self.device if self.device is not None else x.device
+        x = x.to(device)
+        
+        if styles is not None:
+            styles = styles.to(device)
+        if laplace is not None:
+            laplace = laplace.to(device)
+        if content is not None:
+            # 确保content是张量
+            if isinstance(content, torch.Tensor):
+                content = content.to(device)
+            else:
+                try:
+                    content = torch.tensor(content, device=device)
+                except:
+                    # 如果转换失败，提供备用方案
+                    print("警告: 无法将content转换为张量，使用None代替")
+                    content = None
+        
+        if paragraph_features is not None:
+            paragraph_features = paragraph_features.to(device)
+        if position_info is not None:
+            position_info = position_info.to(device)
+        
         n = x.shape[0]  # 批次大小
         
         total_timesteps, sampling_timesteps = self.noise_steps, sampling_timesteps
@@ -187,8 +261,8 @@ class ParagraphDiffusion(Diffusion):
         x_start = None
         
         for time, time_next in tqdm(time_pairs, position=1, leave=False, desc='sampling'):
-            time = (torch.ones(n) * time).long().to(self.device)
-            time_next = (torch.ones(n) * time_next).long().to(self.device)
+            time = (torch.ones(n) * time).long().to(device)
+            time_next = (torch.ones(n) * time_next).long().to(device)
             
             # 前向传播，加入段落特征
             predicted_noise = model(
@@ -228,7 +302,33 @@ class ParagraphDiffusion(Diffusion):
         Args:
             与sample方法相同，但不使用torch.no_grad()
         """
-        model.train()  # 确保模型处于训练模式
+        # 设置模型为训练模式
+        model.train()
+        
+        # 确定设备并确保所有输入在同一设备上
+        device = self.device if self.device is not None else x.device
+        x = x.to(device)
+        
+        if styles is not None:
+            styles = styles.to(device)
+        if laplace is not None:
+            laplace = laplace.to(device)
+        if content is not None:
+            # 确保content是张量
+            if isinstance(content, torch.Tensor):
+                content = content.to(device)
+            else:
+                try:
+                    content = torch.tensor(content, device=device)
+                except:
+                    print("警告: 无法将content转换为张量，使用None代替")
+                    content = None
+        
+        if paragraph_features is not None:
+            paragraph_features = paragraph_features.to(device)
+        if position_info is not None:
+            position_info = position_info.to(device)
+        
         n = x.shape[0]  # 批次大小
         
         total_timesteps, sampling_timesteps = self.noise_steps, sampling_timesteps
@@ -238,8 +338,8 @@ class ParagraphDiffusion(Diffusion):
         x_start = None
         
         for time, time_next in time_pairs:
-            time = (torch.ones(n) * time).long().to(self.device)
-            time_next = (torch.ones(n) * time_next).long().to(self.device)
+            time = (torch.ones(n) * time).long().to(device)
+            time_next = (torch.ones(n) * time_next).long().to(device)
             
             # 前向传播，加入段落特征
             predicted_noise = model(
@@ -273,10 +373,10 @@ class ParagraphDiffusion(Diffusion):
                         paragraph_features=None, position_info=None,
                         total_t=1000, sampling_timesteps=50, eta=0):
         """
-        训练时采样过程，支持段落特征，用于计算损失
+        段落级训练，使用DDIM进行采样，同时保留计算图以便计算梯度
         Args:
             model: 扩展的UNet模型
-            x: 噪声图像
+            x: 输入噪声
             styles: 风格参考
             laplace: 拉普拉斯特征
             content: 内容参考
@@ -285,22 +385,47 @@ class ParagraphDiffusion(Diffusion):
             total_t: 总时间步
             sampling_timesteps: 采样步数
             eta: 随机性参数
-        
-        Returns:
-            x: 生成的样本
-            noise_list[0]: 预测的噪声
-            high_nce_emb, low_nce_emb: 风格特征
         """
+        # 确保模型处于训练模式
+        model.train()
+        for param in model.parameters():
+            param.requires_grad = True
+        
+        # 确定设备并确保所有输入在同一设备上
+        device = self.device if self.device is not None else x.device
+        x = x.to(device)
+        
+        if styles is not None:
+            styles = styles.to(device)
+        if laplace is not None:
+            laplace = laplace.to(device)
+        if content is not None:
+            # 确保content是张量
+            if isinstance(content, torch.Tensor):
+                content = content.to(device)
+            else:
+                try:
+                    content = torch.tensor(content, device=device)
+                except:
+                    print("警告: 无法将content转换为张量，使用None代替")
+                    content = None
+        
+        if paragraph_features is not None:
+            paragraph_features = paragraph_features.to(device)
+        if position_info is not None:
+            position_info = position_info.to(device)
+        
         total_timesteps, sampling_timesteps = total_t, sampling_timesteps
-        times = [-1] + [i/sampling_timesteps for i in range(1, sampling_timesteps + 1)]
-        times = list(reversed(times))
+        times = torch.linspace(0, 1, steps=sampling_timesteps + 1, device=device)
+        times = list(reversed(times.tolist()))
         time_pairs = list(zip(times[:-1], times[1:]))
+        
         x_start = None
         noise_list = []
         
         for time, time_next in tqdm(time_pairs, position=1, leave=False, desc='sampling'):
-            time = (total_timesteps * time).long().to(self.device)
-            time_next = (total_timesteps * time_next).long().to(self.device)
+            time = (total_timesteps * time).long().to(device)
+            time_next = (total_timesteps * time_next).long().to(device)
             
             # 前向传播，加入段落特征
             predicted_noise, high_nce_emb, low_nce_emb = model(

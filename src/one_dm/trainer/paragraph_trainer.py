@@ -43,67 +43,95 @@ class ParagraphTrainer(Trainer):
             step: 当前训练步数
             pbar: 进度条
         """
+        # 确保模型在训练模式
         self.model.train()
         
-        # 准备输入数据
-        images = data['line_images'].to(self.device)        # 形状: [total_lines, C, H, W]
-        style_ref = data['style'].to(self.device)           # 形状: [batch_size, 2, H, W]
-        laplace_ref = data['laplace'].to(self.device)       # 形状: [batch_size, 2, H, W]
-        content_ref = data['content'].to(self.device)       # 形状: [batch_size, T, H, W]
-        wid = data['writer_ids'].to(self.device)            # 形状: [batch_size]
-        paragraph_features = data['paragraph_features'].to(self.device)  # 形状: [batch_size, feature_dim]
-        position_info = data['position_info'].to(self.device)  # 形状: [total_words, 3]
-        
-        # 通过VAE编码图像
-        images = self.vae.encode(images).latent_dist.sample()
-        images = images * 0.18215
-        
-        # 向图像添加噪声
-        t = self.diffusion.sample_timesteps(images.shape[0]).to(self.device)
-        x_t, noise = self.diffusion.noise_images(images, t)
-        
-        # 前向传播，注意这里我们需要传递段落特征和位置信息
-        predicted_noise, high_nce_emb, low_nce_emb = self.model(
-            x_t, t, style_ref, laplace_ref, content_ref, 
-            paragraph_features=paragraph_features,
-            position_info=position_info,
-            tag='train'
-        )
-        
-        # 计算基本损失
-        recon_loss = self.recon_criterion(predicted_noise, noise)
-        high_nce_loss = self.nce_criterion(high_nce_emb, labels=wid)
-        low_nce_loss = self.nce_criterion(low_nce_emb, labels=wid)
-        
-        # 计算段落一致性损失
-        # 从输出中提取特征用于一致性损失
-        feature_dim = high_nce_emb.shape[-1]  # 获取特征维度
-        features = high_nce_emb.reshape(-1, feature_dim)  # 将所有特征展平
-        
-        # 计算段落一致性损失
-        consistency_loss = self.consistency_criterion(features, position_info[:, 1:])  # 忽略batch索引
-        
-        # 总损失
-        loss = recon_loss + high_nce_loss + low_nce_loss + 0.5 * consistency_loss
-        
-        # 反向传播和参数更新
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-        
-        if dist.get_rank() == 0:
-            # 记录损失
-            loss_dict = {
-                "reconstruct_loss": recon_loss.item(), 
-                "high_nce_loss": high_nce_loss.item(),
-                "low_nce_loss": low_nce_loss.item(),
-                "consistency_loss": consistency_loss.item()
-            }
-            self.tb_summary.add_scalars("loss", loss_dict, step)
-            self._progress(recon_loss.item(), pbar)
-        
-        del data, loss
-        torch.cuda.empty_cache()
+        try:
+            # 准备输入数据，确保所有数据在正确的设备上
+            images = data['line_images'].to(self.device)
+            style_ref = data['style'].to(self.device)
+            laplace_ref = data['laplace'].to(self.device)
+            
+            # 确保content是张量且在正确的设备上
+            if isinstance(data['content'], torch.Tensor):
+                content_ref = data['content'].to(self.device)
+            else:
+                try:
+                    content_ref = torch.tensor(data['content'], device=self.device)
+                except Exception as e:
+                    print(f"无法将content转换为张量: {str(e)}")
+                    content_ref = None
+                    
+            wid = data['writer_ids'].to(self.device)
+            paragraph_features = data['paragraph_features'].to(self.device)
+            position_info = data['position_info'].to(self.device)
+            
+            # 确保VAE在正确的设备上
+            self.vae = self.vae.to(self.device)
+            
+            # 通过VAE编码图像
+            images = self.vae.encode(images).latent_dist.sample()
+            images = images * 0.18215
+            
+            # 确保diffusion在正确的设备上
+            self.diffusion = self.diffusion.to(self.device)
+            
+            # 向图像添加噪声
+            t = self.diffusion.sample_timesteps(images.shape[0]).to(self.device)
+            x_t, noise = self.diffusion.noise_images(images, t)
+            
+            # 确保model在正确的设备上
+            self.model = self.model.to(self.device)
+            
+            # 前向传播，注意这里我们需要传递段落特征和位置信息
+            predicted_noise, high_nce_emb, low_nce_emb = self.model(
+                x_t, t, style_ref, laplace_ref, content_ref, 
+                paragraph_features=paragraph_features,
+                position_info=position_info,
+                tag='train'
+            )
+            
+            # 计算基本损失
+            recon_loss = self.recon_criterion(predicted_noise, noise)
+            high_nce_loss = self.nce_criterion(high_nce_emb, labels=wid)
+            low_nce_loss = self.nce_criterion(low_nce_emb, labels=wid)
+            
+            # 计算段落一致性损失
+            # 从输出中提取特征用于一致性损失
+            feature_dim = high_nce_emb.shape[-1]
+            features = high_nce_emb.reshape(-1, feature_dim)
+            
+            # 计算段落一致性损失
+            consistency_loss = self.consistency_criterion(features, position_info[:, 1:])
+            
+            # 总损失
+            loss = recon_loss + high_nce_loss + low_nce_loss + 0.5 * consistency_loss
+            
+            # 反向传播和参数更新
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+            
+            if dist.get_rank() == 0:
+                # 记录损失
+                loss_dict = {
+                    "reconstruct_loss": recon_loss.item(), 
+                    "high_nce_loss": high_nce_loss.item(),
+                    "low_nce_loss": low_nce_loss.item(),
+                    "consistency_loss": consistency_loss.item()
+                }
+                self.tb_summary.add_scalars("loss", loss_dict, step)
+                self._progress(recon_loss.item(), pbar)
+                
+        except Exception as e:
+            print(f"段落训练迭代中出错: {str(e)}")
+        finally:
+            # 无论成功与否，都释放内存
+            if 'data' in locals():
+                del data
+            if 'loss' in locals():
+                del loss
+            torch.cuda.empty_cache()
     
     def train_paragraph(self, n_epochs):
         """
@@ -187,103 +215,139 @@ class ParagraphTrainer(Trainer):
             step: 当前训练步数
             pbar: 进度条
         """
+        # 确保模型在训练模式
         self.model.train()
         
-        # 准备输入数据 - 与训练相同
-        images = data['line_images'].to(self.device)
-        style_ref = data['style'].to(self.device)
-        laplace_ref = data['laplace'].to(self.device)
-        content_ref = data['content'].to(self.device)
-        wid = data['writer_ids'].to(self.device)
-        paragraph_features = data['paragraph_features'].to(self.device)
-        position_info = data['position_info'].to(self.device)
-        texts = data['line_texts']  # 文本内容，用于CTC损失
-        
-        # 生成样本并计算可读性损失
-        batch_size = style_ref.shape[0]
-        image_size = 64  # 假设图像大小为64x64
-        
-        # 生成随机噪声作为起点
-        x = torch.randn((batch_size, 4, image_size, image_size)).to(self.device)
-        
-        # 使用DDIM采样法生成样本，但保留计算图
-        samples = self.diffusion.sample_ddim(
-            self.model, x, style_ref, laplace_ref, content_ref,
-            paragraph_features=paragraph_features,
-            position_info=position_info
-        )
-        
-        # 通过VAE解码生成的样本
-        samples = 1 / 0.18215 * samples
-        decoded_samples = self.vae.decode(samples).sample
-        
-        # 计算基本训练的损失
-        t = self.diffusion.sample_timesteps(images.shape[0]).to(self.device)
-        x_t, noise = self.diffusion.noise_images(images, t)
-        
-        predicted_noise, high_nce_emb, low_nce_emb = self.model(
-            x_t, t, style_ref, laplace_ref, content_ref,
-            paragraph_features=paragraph_features,
-            position_info=position_info,
-            tag='train'
-        )
-        
-        recon_loss = self.recon_criterion(predicted_noise, noise)
-        high_nce_loss = self.nce_criterion(high_nce_emb, labels=wid)
-        low_nce_loss = self.nce_criterion(low_nce_emb, labels=wid)
-        
-        # 计算OCR可读性损失（CTC损失）
-        if self.ocr_model is not None and self.ctc_criterion is not None:
-            # 调整生成的图像以适合OCR模型
-            ocr_input = F.interpolate(decoded_samples, size=(32, 128))
-            ocr_input = ocr_input.repeat(1, 3, 1, 1)  # 如果OCR需要RGB输入
+        try:
+            # 准备输入数据，确保所有数据在正确的设备上
+            images = data['line_images'].to(self.device)
+            style_ref = data['style'].to(self.device)
+            laplace_ref = data['laplace'].to(self.device)
             
-            # 通过OCR模型获取预测
-            ocr_pred = self.ocr_model(ocr_input)
+            # 确保content是张量且在正确的设备上
+            if isinstance(data['content'], torch.Tensor):
+                content_ref = data['content'].to(self.device)
+            else:
+                try:
+                    content_ref = torch.tensor(data['content'], device=self.device)
+                except Exception as e:
+                    print(f"无法将content转换为张量: {str(e)}")
+                    content_ref = None
+                    
+            wid = data['writer_ids'].to(self.device)
+            paragraph_features = data['paragraph_features'].to(self.device)
+            position_info = data['position_info'].to(self.device)
+            texts = data['line_texts']  # 文本内容，用于CTC损失
             
-            # 准备CTC损失的目标
-            target_lengths = []
-            targets = []
-            for text in texts:
-                targets.extend([ord(c) - ord('a') + 1 for c in text.lower() if c.isalpha()])
-                target_lengths.append(len(text))
+            # 确保所有模型在正确的设备上
+            self.model = self.model.to(self.device)
+            self.diffusion = self.diffusion.to(self.device)
+            self.vae = self.vae.to(self.device)
+            if self.ocr_model is not None:
+                self.ocr_model = self.ocr_model.to(self.device)
             
-            targets = torch.tensor(targets, dtype=torch.long).to(self.device)
-            target_lengths = torch.tensor(target_lengths, dtype=torch.long).to(self.device)
-            input_lengths = torch.full((ocr_pred.size(0),), ocr_pred.size(1), dtype=torch.long).to(self.device)
+            # 生成样本并计算可读性损失
+            batch_size = style_ref.shape[0]
+            image_size = 64  # 假设图像大小为64x64
             
-            # 计算CTC损失
-            ctc_loss = self.ctc_criterion(ocr_pred.log_softmax(2), targets, input_lengths, target_lengths)
-        else:
-            ctc_loss = torch.tensor(0.0).to(self.device)
-        
-        # 计算段落一致性损失
-        feature_dim = high_nce_emb.shape[-1]
-        features = high_nce_emb.reshape(-1, feature_dim)
-        consistency_loss = self.consistency_criterion(features, position_info[:, 1:])
-        
-        # 总损失 - 微调时加大OCR损失权重
-        loss = recon_loss + high_nce_loss + low_nce_loss + 0.5 * consistency_loss + 2.0 * ctc_loss
-        
-        # 反向传播和参数更新
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-        
-        if dist.get_rank() == 0:
-            # 记录损失
-            loss_dict = {
-                "reconstruct_loss": recon_loss.item(), 
-                "high_nce_loss": high_nce_loss.item(),
-                "low_nce_loss": low_nce_loss.item(),
-                "consistency_loss": consistency_loss.item(),
-                "ctc_loss": ctc_loss.item()
-            }
-            self.tb_summary.add_scalars("loss", loss_dict, step)
-            self._progress(recon_loss.item(), pbar)
-        
-        del data, loss
-        torch.cuda.empty_cache()
+            # 生成随机噪声作为起点
+            x = torch.randn((batch_size, 4, image_size, image_size), device=self.device)
+            
+            # 使用DDIM采样法生成样本，但保留计算图
+            samples = self.diffusion.sample_ddim(
+                self.model, x, style_ref, laplace_ref, content_ref,
+                paragraph_features=paragraph_features,
+                position_info=position_info
+            )
+            
+            # 通过VAE解码生成的样本
+            samples = 1 / 0.18215 * samples
+            decoded_samples = self.vae.decode(samples).sample
+            
+            # 计算基本训练的损失
+            t = self.diffusion.sample_timesteps(images.shape[0]).to(self.device)
+            x_t, noise = self.diffusion.noise_images(images, t)
+            
+            predicted_noise, high_nce_emb, low_nce_emb = self.model(
+                x_t, t, style_ref, laplace_ref, content_ref,
+                paragraph_features=paragraph_features,
+                position_info=position_info,
+                tag='train'
+            )
+            
+            recon_loss = self.recon_criterion(predicted_noise, noise)
+            high_nce_loss = self.nce_criterion(high_nce_emb, labels=wid)
+            low_nce_loss = self.nce_criterion(low_nce_emb, labels=wid)
+            
+            # 计算段落一致性损失
+            feature_dim = high_nce_emb.shape[-1]
+            features = high_nce_emb.reshape(-1, feature_dim)
+            consistency_loss = self.consistency_criterion(features, position_info[:, 1:])
+            
+            # 初始化CTC损失
+            ctc_loss = torch.tensor(0.0, device=self.device)
+            
+            # 计算OCR可读性损失（CTC损失）
+            if self.ocr_model is not None and self.ctc_criterion is not None:
+                try:
+                    # 调整生成的图像以适合OCR模型
+                    ocr_input = F.interpolate(decoded_samples, size=(32, 128))
+                    ocr_input = ocr_input.repeat(1, 3, 1, 1)  # 如果OCR需要RGB输入
+                    
+                    # 通过OCR模型获取预测
+                    ocr_pred = self.ocr_model(ocr_input)
+                    
+                    # 准备CTC损失的目标
+                    target_lengths = []
+                    targets = []
+                    for text in texts:
+                        targets.extend([ord(c) - ord('a') + 1 for c in text.lower() if c.isalpha()])
+                        target_lengths.append(len(text))
+                    
+                    targets = torch.tensor(targets, device=self.device)
+                    target_lengths = torch.tensor(target_lengths, device=self.device)
+                    input_lengths = torch.full((ocr_pred.size(1),), ocr_pred.size(0), device=self.device)
+                    
+                    # 计算CTC损失
+                    ctc_loss = self.ctc_criterion(
+                        ocr_pred.log_softmax(2).permute(1, 0, 2),
+                        targets,
+                        input_lengths,
+                        target_lengths
+                    )
+                except Exception as e:
+                    print(f"计算CTC损失时出错: {str(e)}")
+                    ctc_loss = torch.tensor(0.0, device=self.device)
+            
+            # 总损失 - 微调时加大OCR损失权重
+            loss = recon_loss + high_nce_loss + low_nce_loss + 0.5 * consistency_loss + 2.0 * ctc_loss
+            
+            # 反向传播和参数更新
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+            
+            if dist.get_rank() == 0:
+                # 记录损失
+                loss_dict = {
+                    "reconstruct_loss": recon_loss.item(), 
+                    "high_nce_loss": high_nce_loss.item(),
+                    "low_nce_loss": low_nce_loss.item(),
+                    "consistency_loss": consistency_loss.item(),
+                    "ctc_loss": ctc_loss.item()
+                }
+                self.tb_summary.add_scalars("loss", loss_dict, step)
+                self._progress(recon_loss.item(), pbar)
+                
+        except Exception as e:
+            print(f"段落微调迭代中出错: {str(e)}")
+        finally:
+            # 无论成功与否，都释放内存
+            if 'data' in locals():
+                del data
+            if 'loss' in locals():
+                del loss
+            torch.cuda.empty_cache()
     
     def finetune_paragraph(self, n_epochs):
         """

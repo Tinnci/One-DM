@@ -180,12 +180,29 @@ class Mix_TR(nn.Module):
         return hs[0].permute(1, 0, 2).contiguous(), high_nce_emb, low_nce_emb
     
     def generate(self, style, laplace, content):
-        if style.shape[1] == 1:
-            anchor_style = style
-            anchor_high = laplace
-        else:
-            anchor_style = style[:, 0, :, :].unsqueeze(1).contiguous()
-            anchor_high = laplace[:, 0, :, :].unsqueeze(1).contiguous()
+        # 检查和处理输入维度
+        if style is None or laplace is None:
+            raise ValueError("Style and laplace inputs must not be None")
+            
+        # 确保style和laplace至少是3维的 [batch, channels, ...]
+        if style.dim() < 3:
+            raise ValueError(f"Style tensor must have at least 3 dimensions, got {style.dim()}")
+        if laplace.dim() < 3:
+            raise ValueError(f"Laplace tensor must have at least 3 dimensions, got {laplace.dim()}")
+            
+        # 处理4维输入 [batch, seq_len, height, width]
+        if style.dim() == 4:
+            if style.shape[1] == 1:
+                anchor_style = style
+                anchor_high = laplace
+            else:
+                anchor_style = style[:, 0, :, :].unsqueeze(1).contiguous()
+                anchor_high = laplace[:, 0, :, :].unsqueeze(1).contiguous()
+        # 处理3维输入 [batch, height, width]
+        elif style.dim() == 3:
+            # 增加一个维度使其成为 [batch, 1, height, width]
+            anchor_style = style.unsqueeze(1).contiguous()
+            anchor_high = laplace.unsqueeze(1).contiguous()
         
         # get the highg frequency and style feature
         anchor_high_feature, anchor_high_emb = self.get_high_style_feature(anchor_high)
