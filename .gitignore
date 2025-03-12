@@ -13,3 +13,24 @@ LICENSE
 model_zoo/One-DM-ckpt.pt
 models/One-DM-ckpt.pt
 *.pth
+
+# 测试输出目录
+test_output/
+outputs/
+
+# 临时文件
+*.pyc
+*.pyo
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.log
+.DS_Store
+.pytest_cache/
+.coverage
+htmlcov/
+.idea/
+*.swp
+*.swo
