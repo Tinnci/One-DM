@@ -10,3 +10,6 @@ Generated/*
 LICENSE
 *.sh
 /.venv
+model_zoo/One-DM-ckpt.pt
+models/One-DM-ckpt.pt
+*.pth
