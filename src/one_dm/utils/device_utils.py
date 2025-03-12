@@ -52,27 +52,44 @@ def check_model_devices(model: torch.nn.Module) -> Dict[torch.device, List[str]]
     
     return devices
 
-def verify_model_on_device(model: torch.nn.Module, target_device: torch.device) -> List[Tuple[str, torch.device]]:
-    """验证模型所有参数是否都在目标设备上
+def verify_model_on_device(model, device):
+    """
+    验证模型的所有参数是否都在指定的设备上，并返回不在指定设备上的参数列表。
     
-    返回:
-        不在目标设备上的参数列表 [(name, device), ...]
+    Args:
+        model (nn.Module): 待验证的模型
+        device (str 或 torch.device): 目标设备
+        
+    Returns:
+        list: 不在指定设备上的参数名称列表
     """
     incorrect_params = []
     
-    # 处理cuda和cuda:0这样的设备差异
-    target_type = str(target_device).split(':')[0]  # 获取设备类型（cuda或cpu）
+    # 将设备转换为字符串以便处理
+    device_str = str(device)
+    
+    # 提取设备类型（cuda 或 cpu），忽略设备索引
+    target_type = device_str.split(':')[0] if ':' in device_str else device_str
     
     for name, param in model.named_parameters():
-        param_device_str = str(param.device)
-        param_type = param_device_str.split(':')[0]  # 获取参数设备类型
+        # 获取参数的设备类型
+        param_device = str(param.device)
+        param_type = param_device.split(':')[0] if ':' in param_device else param_device
         
-        # 如果设备类型不同，则认为是不正确的
+        # 特殊处理cuda设备：cuda等同于cuda:0
+        if (target_type == 'cuda' and param_device == 'cuda:0') or (device_str == 'cuda:0' and param_device == 'cuda'):
+            # 这两种情况视为相同设备，不添加到incorrect_params
+            continue
+            
+        # 其他情况比较设备类型
         if param_type != target_type:
-            incorrect_params.append((name, param.device))
+            incorrect_params.append(name)
     
     if incorrect_params:
-        logger.warning(f"发现 {len(incorrect_params)} 个参数不在目标设备 {target_device} 上")
+        logger.warning(f"模型参数在错误的设备上. 预期设备: {device_str}")
+        for param in incorrect_params:
+            param_device = next(p.device for n, p in model.named_parameters() if n == param)
+            logger.warning(f"  - {param}: {param_device}")
     
     return incorrect_params
 

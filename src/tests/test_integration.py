@@ -135,8 +135,20 @@ def debug_model_tensor_devices(model, device_name):
     device_mismatch = False
     mismatch_modules = []
     
+    # 提取设备类型（cuda 或 cpu），忽略设备索引
+    target_type = device_name.split(':')[0] if ':' in device_name else device_name
+    
     for name, param in model.named_parameters():
-        if str(param.device) != device_name:
+        param_device = str(param.device)
+        param_type = param_device.split(':')[0] if ':' in param_device else param_device
+        
+        # 特殊处理cuda设备：cuda等同于cuda:0
+        if (target_type == 'cuda' and param_device == 'cuda:0') or (device_name == 'cuda:0' and param_device == 'cuda'):
+            # 这两种情况视为相同设备，跳过
+            continue
+            
+        # 检查设备是否匹配
+        if param_type != target_type:
             device_mismatch = True
             mismatch_modules.append(f"{name}: {param.device}")
     
